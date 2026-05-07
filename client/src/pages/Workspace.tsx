@@ -351,57 +351,59 @@ export function WorkspacePage() {
       )}
 
       {/* Main layout */}
-      <div className="flex-1 flex overflow-hidden min-h-0">
-        {sidebarVisible && (
-          <>
-            <div style={{ width: `${sidebarW}vw`, flexShrink: 0, minWidth: 200, maxWidth: '40vw' }}
-              className="flex flex-col overflow-hidden border-r border-white/[0.06]">
-              <FileTree projectId={projectId!} />
-            </div>
-            <ResizeHandle onResize={d => {
-              const vw = window.innerWidth / 100
-              setSidebarW(w => Math.max(200 / vw, Math.min(40, w + d / vw)))
-            }} />
-          </>
-        )}
-
-        {chatVisible && (
-          <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 300 }}>
-            <ChatPanel projectId={projectId!} disableInput={differentKey} />
-          </div>
-        )}
-
-        {rightVisible && (
-          <>
-            <ResizeHandle onResize={d => {
-              const vw = window.innerWidth / 100
-              setRightW(w => Math.max(280 / vw, Math.min(60, w - d / vw)))
-            }} />
-            <div style={{ width: `${rightW}vw`, flexShrink: 0, minWidth: 280, maxWidth: '60vw' }}
-              className="flex flex-col overflow-hidden border-l border-white/[0.06]">
-              <div className="flex-1 overflow-hidden min-h-0">
-                <Editor projectId={projectId!} />
+      {!differentKey && (
+        <div className="flex-1 flex overflow-hidden min-h-0">
+          {sidebarVisible && (
+            <>
+              <div style={{ width: `${sidebarW}vw`, flexShrink: 0, minWidth: 200, maxWidth: '40vw' }}
+                className="flex flex-col overflow-hidden border-r border-white/[0.06]">
+                <FileTree projectId={projectId!} />
               </div>
-              {showPreview && (
-                <>
-                  <ResizeHandle direction="vertical" onResize={d => setPreviewH(h => Math.max(120, Math.min(window.innerHeight * 0.6, h - d)))} />
-                  <div style={{ height: previewH, flexShrink: 0, maxHeight: '60vh' }} className="overflow-hidden">
-                    <Preview projectId={projectId!} />
-                  </div>
-                </>
-              )}
-              {showTerminal && (
-                <>
-                  <ResizeHandle direction="vertical" onResize={d => setTermH(h => Math.max(100, Math.min(window.innerHeight * 0.5, h - d)))} />
-                  <div style={{ height: termH, flexShrink: 0, maxHeight: '50vh' }} className="overflow-hidden">
-                    <TerminalPanel projectId={projectId!} />
-                  </div>
-                </>
-              )}
+              <ResizeHandle onResize={d => {
+                const vw = window.innerWidth / 100
+                setSidebarW(w => Math.max(200 / vw, Math.min(40, w + d / vw)))
+              }} />
+            </>
+          )}
+
+          {chatVisible && (
+            <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 300 }}>
+              <ChatPanel projectId={projectId!} disableInput={differentKey} />
             </div>
-          </>
-        )}
-      </div>
+          )}
+
+          {rightVisible && (
+            <>
+              <ResizeHandle onResize={d => {
+                const vw = window.innerWidth / 100
+                setRightW(w => Math.max(280 / vw, Math.min(60, w - d / vw)))
+              }} />
+              <div style={{ width: `${rightW}vw`, flexShrink: 0, minWidth: 280, maxWidth: '60vw' }}
+                className="flex flex-col overflow-hidden border-l border-white/[0.06]">
+                <div className="flex-1 overflow-hidden min-h-0">
+                  <Editor projectId={projectId!} />
+                </div>
+                {showPreview && (
+                  <>
+                    <ResizeHandle direction="vertical" onResize={d => setPreviewH(h => Math.max(120, Math.min(window.innerHeight * 0.6, h - d)))} />
+                    <div style={{ height: previewH, flexShrink: 0, maxHeight: '60vh' }} className="overflow-hidden">
+                      <Preview projectId={projectId!} />
+                    </div>
+                  </>
+                )}
+                {showTerminal && (
+                  <>
+                    <ResizeHandle direction="vertical" onResize={d => setTermH(h => Math.max(100, Math.min(window.innerHeight * 0.5, h - d)))} />
+                    <div style={{ height: termH, flexShrink: 0, maxHeight: '50vh' }} className="overflow-hidden">
+                      <TerminalPanel projectId={projectId!} />
+                    </div>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       <BackupDialog open={showBackups} onClose={() => setShowBackups(false)} projectId={projectId!} />
       <CreditsDialog open={showCredits} onClose={() => setShowCredits(false)} />
