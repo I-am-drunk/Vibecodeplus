@@ -58,6 +58,18 @@ continuationRouter.post('/enact', async (c) => {
     if (!result.ok) return c.json({ error: result.error.message }, 500)
 
     const newProjectId = result.data.id
+    
+    // Verify project was actually created
+    await new Promise(r => setTimeout(r, 1000)) // Wait for eventual consistency
+    const verify = await cli.listProjects()
+    if (verify.ok) {
+      const exists = verify.data.projects.some((p: any) => p.id === newProjectId)
+      if (!exists) {
+        log.error({ newProjectId }, 'project created but not in list - may have failed')
+        return c.json({ error: 'Project creation failed - project not found after creation' }, 500)
+      }
+    }
+    
     const newHash = hashKey(auth.key)
 
     // Register in DB

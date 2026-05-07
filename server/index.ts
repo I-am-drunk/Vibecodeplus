@@ -35,6 +35,26 @@ await cli.resolveBinary()
   if (deleted.changes > 0) console.log(`[server] cleaned up ${deleted.changes} orphaned empty sessions`)
 }
 
+// Clean up orphaned projects (don't exist remotely)
+{
+  const auth = loadStoredAuth()
+  if (auth?.key) {
+    const result = await cli.listProjects()
+    if (result.ok) {
+      const remoteIds = new Set(result.data.projects.map((p: any) => p.id))
+      const local = getDB().prepare('SELECT id FROM projects').all() as { id: string }[]
+      let cleaned = 0
+      for (const { id } of local) {
+        if (!remoteIds.has(id)) {
+          getDB().prepare('DELETE FROM projects WHERE id = ?').run(id)
+          cleaned++
+        }
+      }
+      if (cleaned > 0) console.log(`[server] cleaned up ${cleaned} orphaned projects not in remote`)
+    }
+  }
+}
+
 const config = getConfig()
 const PORT = config.port ?? 3847
 
