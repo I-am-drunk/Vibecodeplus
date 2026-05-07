@@ -154,32 +154,52 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
             {messages.map((msg, idx) => {
               const isLastUserMsg = msg.role === 'user' && !messages.slice(idx + 1).some(m => m.role === 'user')
               const isLastMsg = idx === messages.length - 1
+              
+              // Find tool calls that belong to this assistant message
+              const msgToolCalls = msg.role === 'assistant' ? toolCalls.filter(tc => tc.messageId === msg.id) : []
+              
               return (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  onRetry={isLastUserMsg && !isStreaming ? () => retryFromIndex(idx) : undefined}
-                  onContinue={msg.cutOff && isLastMsg && !isStreaming ? continueMessage : undefined}
-                />
+                <div key={msg.id}>
+                  <MessageBubble
+                    message={msg}
+                    onRetry={isLastUserMsg && !isStreaming ? () => retryFromIndex(idx) : undefined}
+                    onContinue={msg.cutOff && isLastMsg && !isStreaming ? continueMessage : undefined}
+                  />
+                  {msgToolCalls.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {msgToolCalls.map(tc => <ToolCallCard key={tc.id} {...tc} />)}
+                    </div>
+                  )}
+                </div>
               )
             })}
-            {toolCalls.map(tc => <ToolCallCard key={tc.id} {...tc} />)}
-            {isStreaming && streamingText && (
-              <MessageBubble message={{ id: '__streaming', role: 'assistant', content: streamingText, createdAt: '', streaming: true }} />
-            )}
-            {isStreaming && !streamingText && (
-              <div className="flex gap-3 items-center">
-                <div className="w-8 h-8 rounded-lg bg-[#0a84ff] flex items-center justify-center flex-shrink-0">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/>
-                  </svg>
-                </div>
-                <div className="flex gap-1.5">
-                  {[0,1,2].map(i => (
-                    <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/30"
-                      style={{ animation: `pulse 1.2s ease-in-out ${i * 0.15}s infinite` }} />
-                  ))}
-                </div>
+            
+            {/* Streaming message with tool calls */}
+            {isStreaming && (
+              <div>
+                {streamingText && (
+                  <MessageBubble message={{ id: '__streaming', role: 'assistant', content: streamingText, createdAt: '', streaming: true }} />
+                )}
+                {toolCalls.filter(tc => !tc.messageId).length > 0 && (
+                  <div className={streamingText ? "mt-3 space-y-2" : "space-y-2"}>
+                    {toolCalls.filter(tc => !tc.messageId).map(tc => <ToolCallCard key={tc.id} {...tc} />)}
+                  </div>
+                )}
+                {!streamingText && toolCalls.filter(tc => !tc.messageId).length === 0 && (
+                  <div className="flex gap-3 items-center">
+                    <div className="w-8 h-8 rounded-lg bg-[#0a84ff] flex items-center justify-center flex-shrink-0">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M13 2L3 14h8l-1 8 10-12h-8l1-8z"/>
+                      </svg>
+                    </div>
+                    <div className="flex gap-1.5">
+                      {[0,1,2].map(i => (
+                        <div key={i} className="w-1.5 h-1.5 rounded-full bg-white/30"
+                          style={{ animation: `pulse 1.2s ease-in-out ${i * 0.15}s infinite` }} />
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <div ref={bottomRef} />
@@ -190,24 +210,20 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
       {/* Input */}
       <div className="flex-shrink-0 p-4 border-t border-white/[0.06] bg-[#0a0a0a]">
         <div className="max-w-4xl mx-auto">
-          {isStreaming ? (
-            <button
-              onClick={async () => {
-                if (!activeSessionId) return
-                await api.stopAgent(projectId, activeSessionId)
+          {disableInput ? (
+            <div className="flex items-center justify-center h-12 rounded-2xl border border-[#ff9f0a]/20 bg-[#ff9f0a]/[0.04] text-[13px] text-[#ff9f0a]/60">
+              Migrate project to current API key to send messages
+            </div>
+          ) : (
+            <ChatInput 
+              onSend={sendMessage} 
+              projectId={projectId} 
+              isStreaming={isStreaming}
+              onStop={async () => {
+                if (activeSessionId) await api.stopAgent(projectId, activeSessionId)
               }}
-              className="w-full h-12 rounded-2xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 font-medium text-[13px] transition-colors flex items-center justify-center gap-2"
-            >
-              <div className="w-3 h-3 rounded-sm bg-red-400" />
-              Stop Agent
-            </button>
-          ) : disableInput ? (
-              <div className="flex items-center justify-center h-12 rounded-2xl border border-[#ff9f0a]/20 bg-[#ff9f0a]/[0.04] text-[13px] text-[#ff9f0a]/60">
-                Migrate project to current API key to send messages
-              </div>
-            ) : (
-              <ChatInput onSend={sendMessage} projectId={projectId} />
-            )}
+            />
+          )}
         </div>
       </div>
 

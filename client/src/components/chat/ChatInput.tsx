@@ -5,9 +5,11 @@ import { cn } from '../../lib/utils'
 interface Props {
   onSend: (text: string) => void
   projectId: string
+  isStreaming?: boolean
+  onStop?: () => void
 }
 
-export function ChatInput({ onSend, projectId }: Props) {
+export function ChatInput({ onSend, projectId, isStreaming, onStop }: Props) {
   const [text, setText] = useState('')
   const ref = useRef<HTMLTextAreaElement>(null)
 
@@ -50,18 +52,27 @@ export function ChatInput({ onSend, projectId }: Props) {
         <span className="text-[12px] text-white/20">
           {text.length > 0 ? `${text.length} chars` : 'Shift + Enter for new line'}
         </span>
-        <button
-          onClick={submit}
-          disabled={!canSend}
-          className={cn(
-            'pointer-events-auto w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-150',
-            canSend
-              ? 'bg-[#0a84ff] text-white hover:bg-[#2a94ff] active:scale-95'
-              : 'bg-white/[0.06] text-white/20 cursor-not-allowed'
-          )}
-        >
-          <ArrowUp size={18} strokeWidth={2.5} />
-        </button>
+        {isStreaming ? (
+          <button
+            onClick={onStop}
+            className="pointer-events-auto w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-150 bg-red-500/15 hover:bg-red-500/25 text-red-400"
+          >
+            <div className="w-3 h-3 rounded-sm bg-red-400" />
+          </button>
+        ) : (
+          <button
+            onClick={submit}
+            disabled={!canSend}
+            className={cn(
+              'pointer-events-auto w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-150',
+              canSend
+                ? 'bg-[#0a84ff] text-white hover:bg-[#2a94ff] active:scale-95'
+                : 'bg-white/[0.06] text-white/20 cursor-not-allowed'
+            )}
+          >
+            <ArrowUp size={18} strokeWidth={2.5} />
+          </button>
+        )}
       </div>
     </div>
   )

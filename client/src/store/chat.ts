@@ -18,6 +18,7 @@ export interface ToolCall {
   input: any
   result?: string
   status: 'running' | 'success' | 'error'
+  messageId?: string
 }
 
 export interface ChatSession {
@@ -121,6 +122,8 @@ export const useChatStore = create<ChatState>((set) => ({
         createdAt,
         cutOff: cutOff ?? false,
       }],
+      // Assign messageId to all tool calls without one
+      toolCalls: s.toolCalls.map(tc => tc.messageId ? tc : { ...tc, messageId: msgId }),
     }))
     const newCount = useChatStore.getState().messages.length
     addClientLog('chatStore', 'finalizeStream state updated', { newMessageCount: newCount })
