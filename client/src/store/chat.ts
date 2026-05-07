@@ -9,6 +9,7 @@ export interface Message {
   inputTokens?: number
   outputTokens?: number
   streaming?: boolean
+  cutOff?: boolean
 }
 
 export interface ToolCall {
@@ -44,7 +45,7 @@ interface ChatState {
   setMessages: (messages: Message[]) => void
   addMessage: (msg: Message) => void
   appendStreamText: (text: string) => void
-  finalizeStream: (content: string) => void
+  finalizeStream: (content: string, cutOff?: boolean) => void
   setStreaming: (v: boolean) => void
   setCreditsExhausted: (v: boolean) => void
   setModel: (model: string) => void
@@ -104,9 +105,9 @@ export const useChatStore = create<ChatState>((set) => ({
       return { streamingText: newText }
     })
   },
-  finalizeStream: (content) => {
+  finalizeStream: (content, cutOff) => {
     const prevCount = useChatStore.getState().messages.length
-    addClientLog('chatStore', 'finalizeStream called', { contentLength: content.length, previousMessageCount: prevCount })
+    addClientLog('chatStore', 'finalizeStream called', { contentLength: content.length, previousMessageCount: prevCount, cutOff })
     const msgId = crypto.randomUUID()
     const createdAt = new Date().toISOString()
     addClientLog('chatStore', 'finalizeStream creating assistant message', { msgId, createdAt })
@@ -118,6 +119,7 @@ export const useChatStore = create<ChatState>((set) => ({
         role: 'assistant',
         content,
         createdAt,
+        cutOff: cutOff ?? false,
       }],
     }))
     const newCount = useChatStore.getState().messages.length

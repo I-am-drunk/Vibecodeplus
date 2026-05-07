@@ -99,7 +99,11 @@ function renderMarkdown(text: string): React.ReactNode {
   )
 }
 
-export function MessageBubble({ message }: { message: Message }) {
+export function MessageBubble({ message, onRetry, onContinue }: { 
+  message: Message
+  onRetry?: () => void
+  onContinue?: () => void
+}) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === 'user'
 
@@ -112,10 +116,21 @@ export function MessageBubble({ message }: { message: Message }) {
           <div className="bg-[#0a84ff] text-white rounded-2xl rounded-br-md px-4 py-3 text-[15px] leading-[1.6] whitespace-pre-wrap break-words">
             {message.content}
           </div>
-          <button onClick={copy}
-            className="absolute -bottom-2 -left-2 opacity-0 group-hover:opacity-100 w-7 h-7 rounded-lg bg-[#1c1c1e] border border-white/[0.12] flex items-center justify-center transition-all">
-            {copied ? <Check size={11} className="text-[#30d158]" /> : <Copy size={11} className="text-white/50" />}
-          </button>
+          <div className="absolute -bottom-2 -left-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+            <button onClick={copy}
+              className="w-7 h-7 rounded-lg bg-[#1c1c1e] border border-white/[0.12] flex items-center justify-center">
+              {copied ? <Check size={11} className="text-[#30d158]" /> : <Copy size={11} className="text-white/50" />}
+            </button>
+            {onRetry && (
+              <button onClick={onRetry} title="Retry"
+                className="w-7 h-7 rounded-lg bg-[#1c1c1e] border border-white/[0.12] flex items-center justify-center hover:border-[#0a84ff]/40 transition-colors">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-white/50" strokeWidth="2.5">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+                  <path d="M3 3v5h5"/>
+                </svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -143,6 +158,28 @@ export function MessageBubble({ message }: { message: Message }) {
           <p className="text-[11px] text-white/20 mt-3 font-mono">
             {message.inputTokens}↑ {message.outputTokens}↓
           </p>
+        )}
+
+        {/* Cut-off indicator + actions */}
+        {message.cutOff && !message.streaming && (
+          <div className="mt-3 flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-[12px] text-[#ff9f0a]/70">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              <span>Response cut off</span>
+            </div>
+            {onContinue && (
+              <button onClick={onContinue}
+                className="flex items-center gap-1.5 h-6 px-2.5 rounded-md bg-[#0a84ff]/10 border border-[#0a84ff]/20 text-[12px] text-[#0a84ff] hover:bg-[#0a84ff]/15 transition-colors font-medium">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <polyline points="5 12 19 12"/><polyline points="12 5 19 12 12 19"/>
+                </svg>
+                Continue
+              </button>
+            )}
+          </div>
         )}
       </div>
 

@@ -17,7 +17,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
     sessions, messages, streamingText, isStreaming, activeSessionId,
     creditsExhausted, setCreditsExhausted, setSessions, setMessages, setActiveSession, toolCalls
   } = useChatStore()
-  const { sendMessage, loadSession } = useChat(projectId)
+  const { sendMessage, retryMessage, continueMessage, loadSession } = useChat(projectId)
   const [showSessions, setShowSessions] = useState(false)
   const [showCredits, setShowCredits] = useState(false)
   const [showKeyRecovery, setShowKeyRecovery] = useState(false)
@@ -151,7 +151,14 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
           </div>
         ) : (
           <div className="px-6 py-6 flex flex-col gap-6 max-w-4xl mx-auto w-full">
-            {messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
+            {messages.map((msg, idx) => (
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onRetry={msg.role === 'user' ? retryMessage : undefined}
+                onContinue={msg.cutOff && idx === messages.length - 1 ? continueMessage : undefined}
+              />
+            ))}
             {toolCalls.map(tc => <ToolCallCard key={tc.id} {...tc} />)}
             {isStreaming && streamingText && (
               <MessageBubble message={{ id: '__streaming', role: 'assistant', content: streamingText, createdAt: '', streaming: true }} />

@@ -134,13 +134,14 @@ chatRouter.post('/', async (c) => {
       })
     }
 
-    // Store assistant message
+    // Store assistant message (even partial on cutoff)
     if (fullText) {
-      log.debug({ sessionId: activeSessionId, textLength: fullText.length }, 'storing assistant message')
+      const isCutOff = inputTokens === 0 // no 'done' event means it was cut off
+      log.debug({ sessionId: activeSessionId, textLength: fullText.length, isCutOff }, 'storing assistant message')
       db.prepare(`
-        INSERT INTO messages (session_id, role, content, input_tokens, output_tokens, created_at)
-        VALUES (?, 'assistant', ?, ?, ?, datetime('now'))
-      `).run(activeSessionId, fullText, inputTokens, outputTokens)
+        INSERT INTO messages (session_id, role, content, input_tokens, output_tokens, status, created_at)
+        VALUES (?, 'assistant', ?, ?, ?, ?, datetime('now'))
+      `).run(activeSessionId, fullText, inputTokens, outputTokens, isCutOff ? 'cut_off' : 'complete')
       log.debug({ sessionId: activeSessionId }, 'assistant message stored')
     }
 
@@ -149,6 +150,7 @@ chatRouter.post('/', async (c) => {
       type: 'chat:stream:end',
       sessionId: activeSessionId,
       creditsExhausted,
+      cutOff: fullText.length > 0 && inputTokens === 0,
     })
   })()
 
@@ -224,6 +226,7 @@ chatRouter.get('/sessions/:id', async (c) => {
     createdAt: m.created_at,
     inputTokens: m.input_tokens,
     outputTokens: m.output_tokens,
+    status: m.status,
   }))
 
   log.info({ sessionId, messageCount: messages.length }, 'session retrieved')

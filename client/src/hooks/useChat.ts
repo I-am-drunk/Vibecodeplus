@@ -3,7 +3,7 @@ import { api } from '../lib/api'
 import { useChatStore } from '../store/chat'
 
 export function useChat(projectId: string | null) {
-  const { model, activeSessionId, setActiveSession, addMessage, setStreaming, setCreditsExhausted } = useChatStore()
+  const { model, activeSessionId, setActiveSession, addMessage, setStreaming, setCreditsExhausted, setMessages } = useChatStore()
   const [sending, setSending] = useState(false)
 
   const sendMessage = useCallback(async (prompt: string) => {
@@ -37,6 +37,28 @@ export function useChat(projectId: string | null) {
     }
   }, [projectId, model, activeSessionId, sending])
 
+  // Retry: strip last user+assistant pair, re-send the user prompt
+  const retryMessage = useCallback(async () => {
+    const msgs = useChatStore.getState().messages
+    let lastUserIdx = -1
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'user') { lastUserIdx = i; break }
+    }
+    if (lastUserIdx === -1) return
+    const prompt = msgs[lastUserIdx].content
+    setMessages(msgs.slice(0, lastUserIdx))
+    await sendMessage(prompt)
+  }, [sendMessage, setMessages])
+
+  // Continue: ask model to continue from where it was cut off
+  const continueMessage = useCallback(async () => {
+    const msgs = useChatStore.getState().messages
+    const last = msgs[msgs.length - 1]
+    if (!last || last.role !== 'assistant' || !last.cutOff) return
+    const tail = last.content.slice(-300).trim()
+    await sendMessage(`Please continue your response from where you left off. Your last words were: "...${tail}"`)
+  }, [sendMessage])
+
   const loadSession = useCallback(async (sessionId: string) => {
     try {
       const { messages } = await api.getSession(sessionId)
@@ -48,6 +70,7 @@ export function useChat(projectId: string | null) {
         createdAt: m.createdAt || m.created_at || new Date().toISOString(),
         inputTokens: m.inputTokens || m.input_tokens,
         outputTokens: m.outputTokens || m.output_tokens,
+        cutOff: m.status === 'cut_off',
       }))
       useChatStore.getState().setMessages(mapped)
       setActiveSession(sessionId)
@@ -57,5 +80,5 @@ export function useChat(projectId: string | null) {
     }
   }, [])
 
-  return { sendMessage, loadSession, sending }
+  return { sendMessage, retryMessage, continueMessage, loadSession, sending }
 }

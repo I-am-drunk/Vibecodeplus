@@ -48,9 +48,13 @@ export function useProjectEvents(projectId: string | null) {
             }
             break
           case 'chat:stream:end':
-            finalizeStream(accumulated)
+            finalizeStream(accumulated, event.cutOff)
             accumulated = ''
             notifyFileChanged()
+            break
+          case 'chat:stream:error':
+            finalizeStream(accumulated, true)
+            accumulated = ''
             break
           case 'credits:exhausted':
             setCreditsExhausted(true)
