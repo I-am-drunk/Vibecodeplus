@@ -3,7 +3,7 @@ import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import { serveStatic } from 'hono/bun'
 import path from 'path'
-import { initDB } from './state/db.ts'
+import { initDB, getDB } from './state/db.ts'
 import { loadConfig, getConfig } from './state/config.ts'
 import { loadStoredAuth } from './state/auth.ts'
 import { cli } from './cli/wrapper.ts'
@@ -138,9 +138,10 @@ const server = Bun.serve({
       if (type === 'hub') {
         hub.subscribe(ws as any, [`project:${projectId}`])
         hub.broadcast(`project:${projectId}`, { type: 'ws:connected' })
-        // Start file watcher for this project (only if projectId is valid)
+        // Start file watcher only if project exists in local DB
         if (projectId && projectId !== 'null' && projectId !== 'undefined') {
-          fileWatcher.start(projectId)
+          const exists = getDB().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)
+          if (exists) fileWatcher.start(projectId)
         }
       } else if (type === 'terminal') {
         // SSH terminal — connect a shell channel

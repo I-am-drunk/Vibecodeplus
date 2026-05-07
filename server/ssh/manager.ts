@@ -10,9 +10,11 @@ class SSHManager {
   private connections = new Map<string, Client>()
   private credentials = new Map<string, SandboxCredentials>()
   private pending = new Map<string, Promise<Client>>()
+  private forbidden = new Set<string>() // projects that returned Forbidden — stop retrying
 
   async getConnection(projectId: string): Promise<Client> {
     log.debug({ projectId }, 'getConnection called')
+    if (this.forbidden.has(projectId)) throw new Error(`Project ${projectId} is forbidden`)
     const existing = this.connections.get(projectId)
     if (existing) {
       log.debug({ projectId }, 'returning existing connection')
@@ -41,6 +43,10 @@ class SSHManager {
       const result = await cli.acquireSandbox(projectId)
       if (!result.ok) {
         log.error({ projectId, error: result.error }, 'failed to acquire sandbox credentials')
+        if (result.error.message?.toLowerCase().includes('forbidden')) {
+          this.forbidden.add(projectId)
+          log.warn({ projectId }, 'project blacklisted — Forbidden, will not retry')
+        }
         throw new Error(result.error.message)
       }
       creds = result.data.sandbox || result.data
@@ -127,12 +133,14 @@ class SSHManager {
   async closeConnection(projectId: string) {
     const conn = this.connections.get(projectId)
     if (conn) { conn.end(); this.connections.delete(projectId); this.credentials.delete(projectId) }
+    this.forbidden.delete(projectId)
   }
 
   async closeAll() {
     for (const [, conn] of this.connections) conn.end()
     this.connections.clear()
     this.credentials.clear()
+    this.forbidden.clear()
   }
 }
 
