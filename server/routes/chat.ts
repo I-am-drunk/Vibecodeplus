@@ -5,6 +5,7 @@ import { wsHub as hub } from '../ws/hub.ts'
 import { backupCoordinator } from '../backup/coordinator.ts'
 import { createLogger } from '../lib/logger.ts'
 import { agentUrls } from './projects.ts'
+import { streamRegistry } from '../state/streams.ts'
 
 const log = createLogger('chat')
 
@@ -85,6 +86,7 @@ chatRouter.post('/', async (c) => {
     log.debug({ sessionId: activeSessionId }, 'background stream started')
     log.debug({ sessionId: activeSessionId }, 'background stream started')
     const ac = new AbortController()
+    streamRegistry.register(activeSessionId, projectId, ac)
     let fullText = ''
     let inputTokens = 0
     let outputTokens = 0
@@ -132,6 +134,8 @@ chatRouter.post('/', async (c) => {
         sessionId: activeSessionId,
         message: err instanceof Error ? err.message : String(err),
       })
+    } finally {
+      streamRegistry.unregister(activeSessionId)
     }
 
     // Store assistant message (even partial on cutoff)
@@ -284,6 +288,8 @@ chatRouter.post('/sessions/:id/export', async (c) => {
 // POST /chat/abort — abort active stream
 chatRouter.post('/abort', async (c) => {
   const { projectId, sessionId } = await c.req.json()
+  const aborted = streamRegistry.abort(sessionId, 'user aborted')
+  log.info({ projectId, sessionId, aborted }, 'abort requested')
   hub.broadcast(`project:${projectId}`, { type: 'chat:aborted', sessionId })
-  return c.json({ ok: true })
+  return c.json({ ok: true, aborted })
 })

@@ -162,3 +162,10 @@ authRouter.post('/rotate', async (c) => {
     balanceInDollars 
   })
 })
+
+// GET /auth/credits — lightweight credit balance poll
+authRouter.get('/credits', async (c) => {
+  const result = await cli.getUser()
+  if (!result.ok) return c.json({ error: 'failed' }, 500)
+  return c.json({ credits: result.data.credits })
+})

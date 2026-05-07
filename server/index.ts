@@ -21,7 +21,7 @@ import { terminalRouter } from './routes/terminal.ts'
 import { settingsRouter } from './routes/settings.ts'
 import { continuationRouter } from './routes/continuation.ts'
 
-// Bootstrap singletons
+import { streamRegistry } from './state/streams.ts'
 initDB()
 loadConfig()
 loadStoredAuth()
@@ -221,3 +221,12 @@ console.log(`  Running at http://localhost:${PORT}\n`)
 fileWatcher.onChange((projectId, changes) => {
   hub.broadcast(`project:${projectId}`, { type: 'file:changed', changes })
 })
+
+// Graceful shutdown — kill all active streams to prevent credit drain
+function shutdown(signal: string) {
+  console.log(`[server] ${signal} received — stopping ${streamRegistry.getActive().length} active streams`)
+  streamRegistry.abortAll(`server ${signal}`)
+  process.exit(0)
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

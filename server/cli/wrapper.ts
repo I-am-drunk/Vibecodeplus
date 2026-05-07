@@ -142,8 +142,10 @@ export class VibecodeCliWrapper {
     if (stderrBuf.trim()) console.error('[cli] stderr:', stderrBuf.trim())
     console.log('[cli] Stream completed, total events:', eventCount, 'exitCode:', exitCode)
     
-    if (exitCode !== 0 && eventCount === 0) {
-      throw new Error(`CLI failed with exit code ${exitCode}${stderrBuf ? ': ' + stderrBuf : ''}`)
+    if (exitCode !== 0) {
+      const errMsg = stderrBuf.trim() || `CLI exited with code ${exitCode}`
+      console.error('[cli] Stream failed:', errMsg)
+      throw new Error(errMsg)
     }
   }
 
