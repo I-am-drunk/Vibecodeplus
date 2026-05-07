@@ -71,6 +71,7 @@ code, pre, .mono {
 @keyframes slideIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes retryPop { 0% { transform: rotate(0deg) scale(1); } 40% { transform: rotate(-180deg) scale(0.85); } 100% { transform: rotate(-360deg) scale(1); } }
 
 .animate-fade-in { animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1); }
 .animate-slide-in { animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1); }
