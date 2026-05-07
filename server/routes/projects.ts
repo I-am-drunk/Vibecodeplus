@@ -158,6 +158,14 @@ projectsRouter.post('/:id/workspace', async (c) => {
     return c.json({ error: 'Project not found. Projects must be created through this studio.' }, 404)
   }
 
+  // Check if we already have an active connection
+  const existingConn = await sshManager.getConnection(projectId).catch(() => null)
+  if (existingConn && agentUrls.has(projectId)) {
+    log.info({ projectId }, 'workspace already open - reusing existing sandbox')
+    db.prepare(`UPDATE projects SET last_opened_at = datetime('now') WHERE id = ?`).run(projectId)
+    return c.json({ ok: true, agentUrl: agentUrls.get(projectId) })
+  }
+
   // mark last opened
   db.prepare(`UPDATE projects SET last_opened_at = datetime('now') WHERE id = ?`).run(projectId)
   log.debug({ projectId }, 'updated last opened timestamp')
