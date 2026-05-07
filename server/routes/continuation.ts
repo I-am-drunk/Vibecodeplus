@@ -51,11 +51,6 @@ continuationRouter.post('/enact', async (c) => {
 
   log.info({ sourceProjectId, name: source.name }, 'enacting continuation')
 
-  // Try to capture current state first (best-effort)
-  if (!source.snapshot_dir) {
-    await captureNow(sourceProjectId).catch(() => {})
-  }
-
   try {
     // Create new project under current key
     const name = source.name || 'Continued Project'
@@ -71,18 +66,19 @@ continuationRouter.post('/enact', async (c) => {
       VALUES (?, ?, ?, ?, ?)
     `).run(newProjectId, name, source.description || '', source.default_model || 'claude-sonnet-4-6', newHash)
 
-    // Acquire sandbox and push files
+    // Acquire sandbox and push files in background
     const wsResult = await cli.acquireSandbox(newProjectId)
     if (wsResult.ok) {
-      const { sandbox: creds, links } = wsResult.data
-      try {
-        await sshManager.getConnection(newProjectId)
-        await pushToProject(sourceProjectId, newProjectId)
-        log.info({ newProjectId }, 'files pushed successfully')
-      } catch (e) {
-        log.warn({ newProjectId, err: String(e) }, 'file push failed (non-fatal)')
-      }
+      const { links } = wsResult.data
       if (links?.agentUrl?.url) agentUrls.set(newProjectId, links.agentUrl.url)
+      
+      // Push files in background if snapshot exists
+      if (source.snapshot_dir) {
+        sshManager.getConnection(newProjectId)
+          .then(() => pushToProject(sourceProjectId, newProjectId))
+          .then(() => log.info({ newProjectId }, 'files pushed successfully'))
+          .catch((e) => log.warn({ newProjectId, err: String(e) }, 'file push failed'))
+      }
     }
 
     log.info({ sourceProjectId, newProjectId }, 'continuation complete')
