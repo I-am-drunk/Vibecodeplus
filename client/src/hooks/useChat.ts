@@ -1,56 +1,60 @@
-import { useState, useCallback } from 'react'
+import { useRef, useCallback } from 'react'
 import { api } from '../lib/api'
 import { useChatStore } from '../store/chat'
 
 export function useChat(projectId: string | null) {
-  const { model, activeSessionId, setActiveSession, addMessage, setStreaming, setCreditsExhausted, setMessages } = useChatStore()
-  const [sending, setSending] = useState(false)
+  const { model, setActiveSession, addMessage, setStreaming, setCreditsExhausted, setMessages } = useChatStore()
+  // Use a ref for sending so callbacks never go stale
+  const sendingRef = useRef(false)
 
-  const sendMessage = useCallback(async (prompt: string) => {
-    if (!projectId || !prompt.trim() || sending) return
+  const sendMessage = useCallback(async (prompt: string, sessionId?: string | null) => {
+    if (!projectId || !prompt.trim() || sendingRef.current) return
+    sendingRef.current = true
 
-    setSending(true)
     const msgId = crypto.randomUUID()
     addMessage({ id: msgId, role: 'user', content: prompt, createdAt: new Date().toISOString() })
     setStreaming(true)
 
     try {
       const agentUrl = (window as any).__agentUrl
+      // Read activeSessionId fresh from store at call time
+      const currentSessionId = useChatStore.getState().activeSessionId
+      // sessionId arg overrides store value (pass null to force new session)
+      const sid = sessionId === undefined ? (currentSessionId ?? undefined) : (sessionId ?? undefined)
       const response = await api.sendMessage({
         projectId, model, prompt: prompt.trim(),
-        sessionId: activeSessionId ?? undefined,
+        sessionId: sid,
         agentUrl,
       })
-      if (!activeSessionId && response.sessionId) {
+      if (!currentSessionId && response.sessionId) {
         setActiveSession(response.sessionId)
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      const lower = msg.toLowerCase()
-      if (lower.includes('credit') || lower.includes('exhaust') || msg.includes('402')) {
+      if (msg.toLowerCase().includes('credit') || msg.toLowerCase().includes('exhaust') || msg.includes('402')) {
         setCreditsExhausted(true)
       }
       setStreaming(false)
       console.error('[useChat] sendMessage error:', msg)
     } finally {
-      setSending(false)
+      sendingRef.current = false
     }
-  }, [projectId, model, activeSessionId, sending])
+  }, [projectId, model])
 
-  // Retry: strip last user+assistant pair, re-send the user prompt
-  const retryMessage = useCallback(async () => {
+  // Retry from a specific message index: strip that message and everything after, start fresh session
+  const retryFromIndex = useCallback(async (userMsgIndex: number) => {
     const msgs = useChatStore.getState().messages
-    let lastUserIdx = -1
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === 'user') { lastUserIdx = i; break }
-    }
-    if (lastUserIdx === -1) return
-    const prompt = msgs[lastUserIdx].content
-    setMessages(msgs.slice(0, lastUserIdx))
-    await sendMessage(prompt)
-  }, [sendMessage, setMessages])
+    const msg = msgs[userMsgIndex]
+    if (!msg || msg.role !== 'user') return
+    const prompt = msg.content
+    // Keep everything before this user message
+    setMessages(msgs.slice(0, userMsgIndex))
+    // Force new session so server state matches client state
+    setActiveSession(null)
+    await sendMessage(prompt, null)
+  }, [sendMessage, setMessages, setActiveSession])
 
-  // Continue: ask model to continue from where it was cut off
+  // Continue: ask model to continue from the last cut-off assistant message
   const continueMessage = useCallback(async () => {
     const msgs = useChatStore.getState().messages
     const last = msgs[msgs.length - 1]
@@ -80,5 +84,5 @@ export function useChat(projectId: string | null) {
     }
   }, [])
 
-  return { sendMessage, retryMessage, continueMessage, loadSession, sending }
+  return { sendMessage, retryFromIndex, continueMessage, loadSession, sending: sendingRef.current }
 }
