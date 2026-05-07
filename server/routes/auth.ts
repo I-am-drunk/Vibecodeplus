@@ -28,6 +28,26 @@ authRouter.post('/login', async (c) => {
   }
 
   log.info({ userId: result.data.id, email: result.data.email, plan: result.data.plan }, 'login successful')
+  
+  const credits = result.data.credits || { balance: 0, currency: 'USD' }
+  const balanceInDollars = credits.balance / 100
+  
+  // Check if credits are zero or very low
+  if (credits.balance === 0) {
+    log.warn({ userId: result.data.id }, 'login blocked - zero credits')
+    cli.setApiKey('')
+    return c.json({ 
+      error: 'This API key has zero credits. Please add credits at vibecode.dev/payments before using it.',
+      code: 'ZERO_CREDITS'
+    }, 402)
+  }
+  
+  // Warn if under $1.00
+  const lowCredits = balanceInDollars < 1.0
+  if (lowCredits) {
+    log.warn({ userId: result.data.id, balance: balanceInDollars }, 'login with low credits')
+  }
+  
   storeAuth(apiKey, {
     id: result.data.id,
     email: result.data.email,
@@ -35,7 +55,12 @@ authRouter.post('/login', async (c) => {
     plan: result.data.plan,
   })
 
-  return c.json({ user: result.data, credits: result.data.credits })
+  return c.json({ 
+    user: result.data, 
+    credits: result.data.credits,
+    lowCredits,
+    balanceInDollars 
+  })
 })
 
 authRouter.post('/logout', async (c) => {
@@ -99,6 +124,26 @@ authRouter.post('/rotate', async (c) => {
   }
 
   log.info({ userId: result.data.id, email: result.data.email, plan: result.data.plan }, 'API key rotated successfully')
+  
+  const credits = result.data.credits || { balance: 0, currency: 'USD' }
+  const balanceInDollars = credits.balance / 100
+  
+  // Check if credits are zero or very low
+  if (credits.balance === 0) {
+    log.warn({ userId: result.data.id }, 'rotation blocked - zero credits')
+    if (previousKey) cli.setApiKey(previousKey)
+    return c.json({ 
+      error: 'This API key has zero credits. Please add credits at vibecode.dev/payments before using it.',
+      code: 'ZERO_CREDITS'
+    }, 402)
+  }
+  
+  // Warn if under $1.00
+  const lowCredits = balanceInDollars < 1.0
+  if (lowCredits) {
+    log.warn({ userId: result.data.id, balance: balanceInDollars }, 'rotation with low credits')
+  }
+  
   storeAuth(apiKey, {
     id: result.data.id,
     email: result.data.email,
@@ -110,5 +155,10 @@ authRouter.post('/rotate', async (c) => {
   await sshManager.closeAll()
   log.info('closed all SSH connections after key rotation')
 
-  return c.json({ user: result.data, credits: result.data.credits })
+  return c.json({ 
+    user: result.data, 
+    credits: result.data.credits,
+    lowCredits,
+    balanceInDollars 
+  })
 })

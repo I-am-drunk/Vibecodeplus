@@ -26,9 +26,10 @@ export const useAuthStore = create<AuthState>()(
       login: async (key) => {
         set({ loading: true, error: null })
         try {
-          const { user, credits } = await api.login(key)
-          console.log('[auth] logged in as', user?.email)
-          set({ apiKey: key, user, credits, loading: false })
+          const result = await api.login(key)
+          console.log('[auth] logged in as', result.user?.email)
+          set({ apiKey: key, user: result.user, credits: result.credits, loading: false })
+          return result
         } catch (err) {
           set({ loading: false, error: err instanceof Error ? err.message : String(err) })
           throw err

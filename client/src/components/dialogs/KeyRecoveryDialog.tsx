@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Eye, EyeOff, AlertTriangle, CreditCard, Check, Loader2 } from 'lucide-react'
 import { Dialog } from '../ui/Dialog'
 import { Button } from '../ui/Button'
+import { LowCreditsDialog } from './LowCreditsDialog'
 import { useAuthStore } from '../../store/auth'
 import { api } from '../../lib/api'
 import { addClientLog } from '../../lib/serverLogs'
@@ -21,6 +22,8 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [recovered, setRecovered] = useState(false)
+  const [showLowCreditsWarning, setShowLowCreditsWarning] = useState(false)
+  const [pendingKeyData, setPendingKeyData] = useState<any>(null)
 
   const isForbidden = reason === 'forbidden' || reason === 'unauthorized'
   const title = isForbidden ? 'API key invalid' : 'Credits ran out'
@@ -45,8 +48,16 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
 
     try {
       addClientLog('KeyRecoveryDialog', 'calling api.rotateKey')
-      await api.rotateKey(newKey.trim())
-      addClientLog('KeyRecoveryDialog', 'key rotated successfully')
+      const result = await api.rotateKey(newKey.trim())
+      addClientLog('KeyRecoveryDialog', 'key rotated successfully', { lowCredits: result.lowCredits })
+
+      // Check if low credits
+      if (result.lowCredits) {
+        setPendingKeyData(result)
+        setShowLowCreditsWarning(true)
+        setLoading(false)
+        return
+      }
 
       await refreshCredits()
       addClientLog('KeyRecoveryDialog', 'credits refreshed')
@@ -61,13 +72,37 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
       }, 1200)
     } catch (err) {
       addClientLog('KeyRecoveryDialog', 'rotation failed', { error: String(err) })
-      setError(err instanceof Error ? err.message : String(err))
+      const errMsg = err instanceof Error ? err.message : String(err)
+      
+      // Check for zero credits error
+      if (errMsg.includes('zero credits') || errMsg.includes('ZERO_CREDITS')) {
+        setError('This API key has zero credits. Please add credits at vibecode.dev/payments before using it.')
+      } else {
+        setError(errMsg)
+      }
     } finally {
       setLoading(false)
     }
   }
 
+  const handleLowCreditsConfirm = async () => {
+    setShowLowCreditsWarning(false)
+    await refreshCredits()
+    setRecovered(true)
+    setTimeout(() => {
+      onRecovered()
+      onClose()
+    }, 1200)
+  }
+
+  const handleLowCreditsCancel = () => {
+    setShowLowCreditsWarning(false)
+    setPendingKeyData(null)
+    setNewKey('')
+  }
+
   return (
+    <>
     <Dialog open={open} onClose={onClose} title="" width={440} hideClose>
       <div className="flex flex-col gap-5">
         {/* Header */}
@@ -133,5 +168,15 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
         </div>
       </div>
     </Dialog>
+    
+    {showLowCreditsWarning && pendingKeyData && (
+      <LowCreditsDialog
+        open={showLowCreditsWarning}
+        balance={pendingKeyData.balanceInDollars || 0}
+        onConfirm={handleLowCreditsConfirm}
+        onCancel={handleLowCreditsCancel}
+      />
+    )}
+    </>
   )
 }

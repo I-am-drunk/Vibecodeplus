@@ -85,6 +85,11 @@ continuationRouter.post('/enact', async (c) => {
     }
 
     log.info({ sourceProjectId, newProjectId }, 'continuation complete')
+    
+    // Delete the old orphaned project from local DB
+    db.prepare('DELETE FROM projects WHERE id = ?').run(sourceProjectId)
+    log.info({ sourceProjectId }, 'deleted orphaned project from local DB')
+    
     return c.json({ ok: true, newProjectId, name })
   } catch (err) {
     log.error({ err: String(err) }, 'continuation failed')

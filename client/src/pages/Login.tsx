@@ -4,10 +4,13 @@ import { Eye, EyeOff, Zap } from 'lucide-react'
 import { useAuthStore } from '../store/auth'
 import { Button } from '../components/ui/Button'
 import { Input } from '../components/ui/Input'
+import { LowCreditsDialog } from '../components/dialogs/LowCreditsDialog'
 
 export function LoginPage() {
   const [key, setKey] = useState('')
   const [show, setShow] = useState(false)
+  const [showLowCredits, setShowLowCredits] = useState(false)
+  const [pendingBalance, setPendingBalance] = useState(0)
   const { login, loading, error, apiKey } = useAuthStore()
   const navigate = useNavigate()
 
@@ -17,9 +20,27 @@ export function LoginPage() {
     e.preventDefault()
     if (!key.trim()) return
     try {
-      await login(key.trim())
+      const result = await login(key.trim())
+      
+      // Check for low credits warning
+      if (result?.lowCredits) {
+        setPendingBalance(result.balanceInDollars || 0)
+        setShowLowCredits(true)
+        return
+      }
+      
       navigate('/', { replace: true })
     } catch {}
+  }
+
+  const handleLowCreditsConfirm = () => {
+    setShowLowCredits(false)
+    navigate('/', { replace: true })
+  }
+
+  const handleLowCreditsCancel = () => {
+    setShowLowCredits(false)
+    setKey('')
   }
 
   return (
@@ -85,6 +106,13 @@ export function LoginPage() {
           </a>
         </p>
       </div>
+      
+      <LowCreditsDialog
+        open={showLowCredits}
+        balance={pendingBalance}
+        onConfirm={handleLowCreditsConfirm}
+        onCancel={handleLowCreditsCancel}
+      />
     </div>
   )
 }
