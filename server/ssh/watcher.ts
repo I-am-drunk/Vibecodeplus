@@ -30,7 +30,13 @@ class FileChangeWatcher {
           // Debounced snapshot for continuation system
           scheduleCapture(projectId)
         }
-      } catch { /* SSH might be disconnected, ignore */ }
+      } catch (err) {
+        const msg = String(err)
+        if (msg.includes('Forbidden') || msg.includes('acquiring sandbox failed')) {
+          // Project belongs to old API key - stop watching
+          this.stop(projectId)
+        }
+      }
     }, pollMs)
 
     this.intervals.set(projectId, interval)

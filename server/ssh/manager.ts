@@ -10,9 +10,19 @@ class SSHManager {
   private connections = new Map<string, Client>()
   private credentials = new Map<string, SandboxCredentials>()
   private pending = new Map<string, Promise<Client>>()
+  private failCounts = new Map<string, number>()
+  private failures = new Map<string, { count: number; lastError: string }>()
+  private failures = new Map<string, { count: number; lastFail: number }>()
 
   async getConnection(projectId: string): Promise<Client> {
     log.debug({ projectId }, 'getConnection called')
+    
+    // Check failure count - stop after 3 consecutive failures
+    const fail = this.failures.get(projectId)
+    if (fail && fail.count >= 3 && Date.now() - fail.lastFail < 300_000) {
+      throw new Error('Too many failed connection attempts, backing off for 5 minutes')
+    }
+    
     const existing = this.connections.get(projectId)
     if (existing) {
       log.debug({ projectId }, 'returning existing connection')
@@ -27,7 +37,16 @@ class SSHManager {
     this.pending.set(projectId, promise)
     try {
       const conn = await promise
+      this.failures.delete(projectId) // Success - clear failures
       return conn
+    } catch (err) {
+      // Track failure
+      const f = this.failures.get(projectId) || { count: 0, lastFail: 0 }
+      f.count++
+      f.lastFail = Date.now()
+      this.failures.set(projectId, f)
+      log.warn({ projectId, failCount: f.count }, 'connection attempt failed')
+      throw err
     } finally {
       this.pending.delete(projectId)
     }
@@ -40,9 +59,18 @@ class SSHManager {
       log.debug({ projectId }, 'fetching credentials from CLI')
       const result = await cli.acquireSandbox(projectId)
       if (!result.ok) {
-        log.error({ projectId, error: result.error }, 'failed to acquire sandbox credentials')
+        const failCount = (this.failCounts.get(projectId) || 0) + 1
+        this.failCounts.set(projectId, failCount)
+        
+        if (failCount <= 3) {
+          log.error({ projectId, error: result.error }, 'failed to acquire sandbox credentials')
+        } else if (failCount === 4) {
+          log.error({ projectId }, `failed to acquire sandbox (${result.error.code}) - suppressing further logs`)
+        }
+        
         throw new Error(result.error.message)
       }
+      this.failCounts.delete(projectId) // Success - clear failure count
       creds = result.data.sandbox || result.data
       this.credentials.set(projectId, creds)
       log.info({ projectId, host: (creds as any).ipv4, port: (creds as any).sshPort }, 'credentials acquired')
@@ -72,6 +100,7 @@ class SSHManager {
     conn.on('close', () => { this.connections.delete(projectId); this.credentials.delete(projectId) })
     conn.on('error', () => { this.connections.delete(projectId); this.credentials.delete(projectId) })
     this.connections.set(projectId, conn)
+    this.failCounts.delete(projectId) // Clear on successful connection
     return conn
   }
 
