@@ -73,6 +73,11 @@ export const useChatStore = create<ChatState>((set) => ({
     const prev = useChatStore.getState().activeSessionId
     addClientLog('chatStore', 'setActiveSession called', { id, previousId: prev })
     set({ activeSessionId: id })
+    if (id) {
+      localStorage.setItem('activeSessionId', id)
+    } else {
+      localStorage.removeItem('activeSessionId')
+    }
     addClientLog('chatStore', 'setActiveSession state updated', { newId: id })
   },
   setMessages: (messages) => {

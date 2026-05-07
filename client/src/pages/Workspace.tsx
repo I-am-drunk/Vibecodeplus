@@ -351,7 +351,7 @@ export function WorkspacePage() {
       )}
 
       {/* Main layout */}
-      {!differentKey && (
+      {!differentKey ? (
         <div className="flex-1 flex overflow-hidden min-h-0">
           {sidebarVisible && (
             <>
@@ -402,6 +402,28 @@ export function WorkspacePage() {
               </div>
             </>
           )}
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md">
+            <div className="w-16 h-16 rounded-2xl bg-[#ff9f0a]/10 border border-[#ff9f0a]/20 flex items-center justify-center mx-auto mb-4">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="text-[#ff9f0a]" strokeWidth="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                <path d="M2 17l10 5 10-5"/>
+                <path d="M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <h2 className="text-[18px] font-semibold text-white mb-2">Project Migration Required</h2>
+            <p className="text-[14px] text-white/50 mb-6">
+              This project was created with a different API key. Click below to migrate it to your current key.
+            </p>
+            <button 
+              onClick={() => continuationStore.setShowDialog(true)}
+              className="px-6 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0a84ff]/90 text-white font-medium transition-colors"
+            >
+              Migrate Project
+            </button>
+          </div>
         </div>
       )}
 

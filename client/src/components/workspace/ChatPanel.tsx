@@ -46,6 +46,13 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
       addClientLog('ChatPanel', 'calling setSessions')
       setSessions(sessions)
       addClientLog('ChatPanel', 'setSessions completed')
+      
+      // Restore active session from localStorage
+      const savedSessionId = localStorage.getItem('activeSessionId')
+      if (savedSessionId && sessions.some(s => s.id === savedSessionId)) {
+        addClientLog('ChatPanel', 'restoring saved session', { sessionId: savedSessionId })
+        loadSession(savedSessionId).catch(() => {})
+      }
     }).catch(err => {
       addClientLog('ChatPanel', 'api.listSessions failed', { error: String(err), stack: err instanceof Error ? err.stack : undefined })
     })
