@@ -158,11 +158,14 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
               // Find tool calls that belong to this assistant message
               const msgToolCalls = msg.role === 'assistant' ? toolCalls.filter(tc => tc.messageId === msg.id) : []
               
+              // For assistant messages, check if we should show retry (empty response)
+              const showRetry = msg.role === 'assistant' && !msg.content && isLastMsg && !isStreaming
+              
               return (
                 <div key={msg.id}>
                   <MessageBubble
                     message={msg}
-                    onRetry={isLastUserMsg && !isStreaming ? () => retryFromIndex(idx) : undefined}
+                    onRetry={isLastUserMsg && !isStreaming ? () => retryFromIndex(idx) : showRetry ? () => retryFromIndex(idx - 1) : undefined}
                     onContinue={msg.cutOff && isLastMsg && !isStreaming ? continueMessage : undefined}
                   />
                   {msgToolCalls.length > 0 && (

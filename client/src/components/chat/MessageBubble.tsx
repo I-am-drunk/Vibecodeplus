@@ -285,8 +285,39 @@ export function MessageBubble({ message, onRetry, onContinue }: {
           </p>
         )}
 
+        {/* No response banner */}
+        {!message.content && !message.streaming && (
+          <div
+            className="mt-3 flex items-center gap-2.5 px-3 py-2 rounded-xl"
+            style={{
+              background: 'rgba(255,69,58,0.06)',
+              border: '1px solid rgba(255,69,58,0.15)',
+              animation: 'fadeIn 0.3s ease',
+            }}
+          >
+            <span style={{ color: 'rgba(255,69,58,0.7)' }}><WarnIcon /></span>
+            <span className="text-[12px] flex-1" style={{ color: 'rgba(255,69,58,0.7)' }}>Agent returned no response</span>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="flex items-center gap-2 h-8 px-3.5 rounded-xl text-[13px] font-medium transition-all duration-150"
+                style={{
+                  background: 'rgba(255,69,58,0.12)',
+                  border: '1px solid rgba(255,69,58,0.25)',
+                  color: '#ff453a',
+                }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.2)' }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,69,58,0.12)' }}
+              >
+                <RetryIcon />
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Cut-off banner */}
-        {message.cutOff && !message.streaming && (
+        {message.content && message.cutOff && !message.streaming && (
           <div
             className="mt-3 flex items-center gap-2.5 px-3 py-2 rounded-xl"
             style={{

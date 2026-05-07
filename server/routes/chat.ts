@@ -154,7 +154,8 @@ chatRouter.post('/', async (c) => {
       type: 'chat:stream:end',
       sessionId: activeSessionId,
       creditsExhausted,
-      cutOff: fullText.length > 0 && inputTokens === 0,
+      cutOff: fullText.length === 0 || (fullText.length > 0 && inputTokens === 0),
+      empty: fullText.length === 0,
     })
   })()
 

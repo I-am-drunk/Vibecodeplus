@@ -109,6 +109,7 @@ export const useChatStore = create<ChatState>((set) => ({
   finalizeStream: (content, cutOff) => {
     const prevCount = useChatStore.getState().messages.length
     addClientLog('chatStore', 'finalizeStream called', { contentLength: content.length, previousMessageCount: prevCount, cutOff })
+    
     const msgId = crypto.randomUUID()
     const createdAt = new Date().toISOString()
     addClientLog('chatStore', 'finalizeStream creating assistant message', { msgId, createdAt })
@@ -118,7 +119,7 @@ export const useChatStore = create<ChatState>((set) => ({
       messages: [...s.messages, {
         id: msgId,
         role: 'assistant',
-        content,
+        content: content || '',
         createdAt,
         cutOff: cutOff ?? false,
       }],
