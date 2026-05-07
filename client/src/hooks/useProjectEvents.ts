@@ -5,7 +5,7 @@ import { useAuthStore } from '../store/auth'
 import { useWorkspaceStore } from '../store/workspace'
 
 export function useProjectEvents(projectId: string | null) {
-  const { appendStreamText, finalizeStream, setStreaming, setCreditsExhausted } = useChatStore()
+  const { appendStreamText, finalizeStream, setStreaming, setCreditsExhausted, addToolCall, updateToolCall, clearToolCalls } = useChatStore()
   const { setCredits } = useAuthStore()
   const { notifyFileChanged } = useWorkspaceStore()
 
@@ -22,17 +22,29 @@ export function useProjectEvents(projectId: string | null) {
           case 'chat:stream:start':
             accumulated = ''
             setStreaming(true)
+            clearToolCalls()
             break
           case 'chat:event':
             if (event.event?.type === 'text' && event.event.text) {
               accumulated += event.event.text
               appendStreamText(event.event.text)
             } else if (event.event?.type === 'tool_use') {
-              // Log tool use for visualization
-              console.log('[tool_use]', event.event.name, event.event.input)
+              // Add tool call visualization
+              addToolCall({
+                id: event.event.id,
+                name: event.event.name,
+                input: event.event.input,
+                status: 'running'
+              })
             } else if (event.event?.type === 'tool_result') {
-              // Log tool result
-              console.log('[tool_result]', event.event.tool_use_id, event.event.content?.substring(0, 200))
+              // Update tool call with result
+              const content = typeof event.event.content === 'string' 
+                ? event.event.content 
+                : JSON.stringify(event.event.content)
+              updateToolCall(event.event.tool_use_id, {
+                result: content,
+                status: event.event.is_error ? 'error' : 'success'
+              })
             }
             break
           case 'chat:stream:end':

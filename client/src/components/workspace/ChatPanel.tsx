@@ -4,6 +4,7 @@ import { useChatStore } from '../../store/chat'
 import { useChat } from '../../hooks/useChat'
 import { MessageBubble } from '../chat/MessageBubble'
 import { ChatInput } from '../chat/ChatInput'
+import { ToolCallCard } from '../chat/ToolCallCard'
 import { SessionList } from './SessionList'
 import { CreditsDialog } from '../dialogs/CreditsDialog'
 import { KeyRecoveryDialog } from '../dialogs/KeyRecoveryDialog'
@@ -14,7 +15,7 @@ import { addClientLog } from '../../lib/serverLogs'
 export function ChatPanel({ projectId, disableInput = false }: { projectId: string; disableInput?: boolean }) {
   const {
     sessions, messages, streamingText, isStreaming, activeSessionId,
-    creditsExhausted, setCreditsExhausted, setSessions, setMessages, setActiveSession,
+    creditsExhausted, setCreditsExhausted, setSessions, setMessages, setActiveSession, toolCalls
   } = useChatStore()
   const { sendMessage, loadSession } = useChat(projectId)
   const [showSessions, setShowSessions] = useState(false)
@@ -144,6 +145,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
         ) : (
           <div className="px-6 py-6 flex flex-col gap-6 max-w-4xl mx-auto w-full">
             {messages.map(msg => <MessageBubble key={msg.id} message={msg} />)}
+            {toolCalls.map(tc => <ToolCallCard key={tc.id} {...tc} />)}
             {isStreaming && streamingText && (
               <MessageBubble message={{ id: '__streaming', role: 'assistant', content: streamingText, createdAt: '', streaming: true }} />
             )}

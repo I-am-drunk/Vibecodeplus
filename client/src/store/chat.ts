@@ -11,6 +11,14 @@ export interface Message {
   streaming?: boolean
 }
 
+export interface ToolCall {
+  id: string
+  name: string
+  input: any
+  result?: string
+  status: 'running' | 'success' | 'error'
+}
+
 export interface ChatSession {
   id: string
   projectId: string
@@ -29,6 +37,7 @@ interface ChatState {
   isStreaming: boolean
   creditsExhausted: boolean
   model: string
+  toolCalls: ToolCall[]
 
   setSessions: (sessions: ChatSession[]) => void
   setActiveSession: (id: string | null) => void
@@ -39,6 +48,9 @@ interface ChatState {
   setStreaming: (v: boolean) => void
   setCreditsExhausted: (v: boolean) => void
   setModel: (model: string) => void
+  addToolCall: (toolCall: ToolCall) => void
+  updateToolCall: (id: string, updates: Partial<ToolCall>) => void
+  clearToolCalls: () => void
   reset: () => void
 }
 
@@ -50,6 +62,7 @@ export const useChatStore = create<ChatState>((set) => ({
   isStreaming: false,
   creditsExhausted: false,
   model: 'claude-sonnet-4-6',
+  toolCalls: [],
 
   setSessions: (sessions) => {
     addClientLog('chatStore', 'setSessions called', { count: sessions.length })
@@ -121,6 +134,17 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ model })
     addClientLog('chatStore', 'setModel state updated')
   },
+  addToolCall: (toolCall) => {
+    set(s => ({ toolCalls: [...s.toolCalls, toolCall] }))
+  },
+  updateToolCall: (id, updates) => {
+    set(s => ({
+      toolCalls: s.toolCalls.map(tc => tc.id === id ? { ...tc, ...updates } : tc)
+    }))
+  },
+  clearToolCalls: () => {
+    set({ toolCalls: [] })
+  },
   reset: () => {
     const prev = useChatStore.getState()
     addClientLog('chatStore', 'reset called - clearing all state', {
@@ -130,7 +154,7 @@ export const useChatStore = create<ChatState>((set) => ({
       prevStreamingText: prev.streamingText.length,
       prevIsStreaming: prev.isStreaming,
     })
-    set({ sessions: [], activeSessionId: null, messages: [], streamingText: '', isStreaming: false })
+    set({ sessions: [], activeSessionId: null, messages: [], streamingText: '', isStreaming: false, toolCalls: [] })
     addClientLog('chatStore', 'reset state cleared')
   },
 }))
