@@ -31,6 +31,7 @@ export const api = {
 
   sendMessage: (body: any) => req<{ sessionId: string }>('POST', '/api/chat', body),
   abortChat: (projectId: string, sessionId: string) => req('POST', '/api/chat/abort', { projectId, sessionId }),
+  stopAgent: (projectId: string, sessionId: string) => req('POST', '/api/chat/stop', { projectId, sessionId }),
   listSessions: (projectId: string) => req<{ sessions: any[] }>('GET', `/api/chat/sessions?projectId=${projectId}`),
   getSession: (id: string) => req<{ session: any; messages: any[] }>('GET', `/api/chat/sessions/${id}`),
   deleteSession: (id: string) => req('DELETE', `/api/chat/sessions/${id}`),

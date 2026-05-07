@@ -293,3 +293,23 @@ chatRouter.post('/abort', async (c) => {
   hub.broadcast(`project:${projectId}`, { type: 'chat:aborted', sessionId })
   return c.json({ ok: true, aborted })
 })
+
+// POST /chat/stop — stop the remote agent (kills credit-draining sessions)
+chatRouter.post('/stop', async (c) => {
+  const { projectId, sessionId } = await c.req.json()
+  
+  // Abort local stream if running
+  streamRegistry.abort(sessionId, 'user stopped')
+  
+  // Stop remote agent
+  const agentUrl = agentUrls.get(projectId)
+  if (agentUrl) {
+    const result = await cli.agentStop(agentUrl)
+    log.info({ projectId, sessionId, agentUrl, result }, 'remote agent stop requested')
+    hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true })
+    return c.json({ ok: true, stopped: result.ok })
+  }
+  
+  hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true })
+  return c.json({ ok: true, stopped: false, reason: 'no agentUrl' })
+})

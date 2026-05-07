@@ -190,7 +190,18 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
       {/* Input */}
       <div className="flex-shrink-0 p-4 border-t border-white/[0.06] bg-[#0a0a0a]">
         <div className="max-w-4xl mx-auto">
-          {disableInput ? (
+          {isStreaming ? (
+            <button
+              onClick={async () => {
+                if (!activeSessionId) return
+                await api.stopAgent(projectId, activeSessionId)
+              }}
+              className="w-full h-12 rounded-2xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 font-medium text-[13px] transition-colors flex items-center justify-center gap-2"
+            >
+              <div className="w-3 h-3 rounded-sm bg-red-400" />
+              Stop Agent
+            </button>
+          ) : disableInput ? (
               <div className="flex items-center justify-center h-12 rounded-2xl border border-[#ff9f0a]/20 bg-[#ff9f0a]/[0.04] text-[13px] text-[#ff9f0a]/60">
                 Migrate project to current API key to send messages
               </div>

@@ -223,9 +223,12 @@ export class VibecodeCliWrapper {
   }
 
   agentSend(agentUrl: string, model: string, prompt: string, opts?: { signal?: AbortSignal }) {
-    // --output json must come BEFORE the positional TARGET argument
     const args = ['agent', 'send', '--model', model, '--output', 'json', agentUrl, prompt]
     return this.runStream(args, { signal: opts?.signal })
+  }
+
+  async agentStop(agentUrl: string): Promise<CLIResult<{ stopped: boolean }>> {
+    return this.runJSON(['agent', 'stop', '--output', 'json', agentUrl])
   }
 
   private parseError(exitCode: number, stdout: string, stderr: string): CLIError {

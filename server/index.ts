@@ -27,6 +27,14 @@ loadConfig()
 loadStoredAuth()
 await cli.resolveBinary()
 
+// Clean up orphaned sessions (0 messages — agent never responded or server crashed mid-stream)
+{
+  const deleted = getDB().prepare(`
+    DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM messages)
+  `).run()
+  if (deleted.changes > 0) console.log(`[server] cleaned up ${deleted.changes} orphaned empty sessions`)
+}
+
 const config = getConfig()
 const PORT = config.port ?? 3847
 
