@@ -121,15 +121,20 @@ projectsRouter.patch('/:id', async (c) => {
 
 projectsRouter.delete('/:id', async (c) => {
   const projectId = c.req.param('id')
+  
+  // Try to delete remotely, but don't fail if it doesn't exist (orphaned project)
   const result = await cli.deleteProject(projectId)
-  if (!result.ok) return c.json({ error: result.error }, 500)
+  if (!result.ok && !result.error.message?.includes('not found') && !result.error.message?.includes('Forbidden')) {
+    log.warn({ projectId, error: result.error }, 'remote delete failed, but continuing with local cleanup')
+  }
 
-  // clean up SSH + DB records
+  // Always clean up local resources
   await sshManager.disconnect(projectId).catch(() => {})
   const db = getDB()
   db.prepare('DELETE FROM projects WHERE id = ?').run(projectId)
   db.prepare('DELETE FROM sessions WHERE project_id = ?').run(projectId)
-
+  
+  log.info({ projectId }, 'project deleted (local cleanup complete)')
   return c.json({ ok: true })
 })
 
