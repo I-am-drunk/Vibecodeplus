@@ -27,6 +27,12 @@ export function useProjectEvents(projectId: string | null) {
             if (event.event?.type === 'text' && event.event.text) {
               accumulated += event.event.text
               appendStreamText(event.event.text)
+            } else if (event.event?.type === 'tool_use') {
+              // Log tool use for visualization
+              console.log('[tool_use]', event.event.name, event.event.input)
+            } else if (event.event?.type === 'tool_result') {
+              // Log tool result
+              console.log('[tool_result]', event.event.tool_use_id, event.event.content?.substring(0, 200))
             }
             break
           case 'chat:stream:end':

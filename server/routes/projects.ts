@@ -176,7 +176,7 @@ projectsRouter.post('/:id/workspace', async (c) => {
         // Project belongs to a different key — trigger continuation flow on the client
         const dbRow = db.prepare('SELECT snapshot_at FROM projects WHERE id = ?').get(projectId) as any
         log.info({ projectId }, 'project not found under current key — activating continuation flow')
-        return c.json({ differentKey: true, snapshotAt: dbRow?.snapshot_at ?? null })
+        return c.json({ ok: false, differentKey: true, snapshotAt: dbRow?.snapshot_at ?? null })
       }
       return c.json({ 
         error: 'API key is invalid or account is restricted. Please update your API key in Settings.',
