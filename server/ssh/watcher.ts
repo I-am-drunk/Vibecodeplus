@@ -27,6 +27,8 @@ class FileChangeWatcher {
             action: 'modified' as const,
           }))
           for (const h of this.handlers) h(projectId, changes)
+          // Debounced snapshot for continuation system
+          scheduleCapture(projectId)
         }
       } catch { /* SSH might be disconnected, ignore */ }
     }, pollMs)

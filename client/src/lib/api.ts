@@ -26,7 +26,7 @@ export const api = {
     req<{ project: any }>('POST', '/api/projects', body),
   deleteProject: (id: string) => req('DELETE', `/api/projects/${id}`),
   patchProject: (id: string, body: any) => req('PATCH', `/api/projects/${id}`, body),
-  openWorkspace: (id: string) => req<{ ok: boolean; sandbox: any }>('POST', `/api/projects/${id}/workspace`),
+  openWorkspace: (id: string) => req<{ ok: boolean; sandbox: any; agentUrl?: string; differentKey?: boolean; snapshotAt?: string | null }>('POST', `/api/projects/${id}/workspace`),
   closeWorkspace: (id: string) => req('DELETE', `/api/projects/${id}/workspace`).catch(() => {}),
 
   sendMessage: (body: any) => req<{ sessionId: string }>('POST', '/api/chat', body),
@@ -60,4 +60,10 @@ export const api = {
   patchSettings: (body: any) => req('PATCH', '/api/settings', body),
 
   rotateKey: (key: string) => req<{ user: any; credits: any }>('POST', '/api/auth/rotate', { apiKey: key }),
+  enactContinuation: (sourceProjectId: string) =>
+    req<{ ok: boolean; newProjectId: string; name: string }>('POST', '/api/continuation/enact', { sourceProjectId }),
+  captureSnapshot: (projectId: string) =>
+    req<{ ok: boolean; fileCount: number }>('POST', `/api/continuation/capture/${projectId}`),
+  continuationStatus: (projectId: string) =>
+    req<{ snapshotAt: string | null; needsContinuation: boolean }>('GET', `/api/continuation/status/${projectId}`),
 }

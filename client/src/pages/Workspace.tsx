@@ -123,9 +123,10 @@ export function WorkspacePage() {
 
     api.openWorkspace(projectId)
       .then(async (res) => {
-        // Different API key — cannot open
+        // Different API key — activate continuation flow immediately
         if (res.differentKey) {
           continuationStore.setDifferentKey(true, res.snapshotAt)
+          continuationStore.setShowDialog(true)
           setConnecting(false)
           return
         }

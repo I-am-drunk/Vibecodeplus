@@ -72,10 +72,11 @@ projectsRouter.post('/', async (c) => {
   if (!result.ok) return c.json({ error: result.error }, 500)
 
   const db = getDB()
+  const keyHashCreate = (() => { const a = loadStoredAuth(); return a?.key ? hashKey(a.key) : null })()
   db.prepare(`
-    INSERT OR REPLACE INTO projects (id, name, description, default_model)
-    VALUES (?, ?, ?, ?)
-  `).run(result.data.id, name.trim(), description ?? null, defaultModel ?? 'claude-sonnet-4-6')
+    INSERT OR REPLACE INTO projects (id, name, description, default_model, api_key_hash)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(result.data.id, name.trim(), description ?? null, defaultModel ?? 'claude-sonnet-4-6', keyHashCreate)
 
   return c.json({ project: { ...result.data, defaultModel } }, 201)
 })
@@ -166,8 +167,17 @@ projectsRouter.post('/:id/workspace', async (c) => {
       return c.json({ error: 'Insufficient credits. Add credits at vibecode.dev/payments' }, 402)
     }
     
-    // Check if Forbidden (deleted/invalid API key)
+    // Check if Forbidden — project may have been created with a different key
     if (result.error.message?.includes('Forbidden') || result.error.stderr?.includes('Forbidden')) {
+      // Check if this project exists under the current API key
+      const remoteList = await cli.listProjects()
+      const existsRemotely = remoteList.ok && remoteList.data.some((p: any) => p.id === projectId)
+      if (!existsRemotely) {
+        // Project belongs to a different key — trigger continuation flow on the client
+        const dbRow = db.prepare('SELECT snapshot_at FROM projects WHERE id = ?').get(projectId) as any
+        log.info({ projectId }, 'project not found under current key — activating continuation flow')
+        return c.json({ differentKey: true, snapshotAt: dbRow?.snapshot_at ?? null })
+      }
       return c.json({ 
         error: 'API key is invalid or account is restricted. Please update your API key in Settings.',
         code: 'FORBIDDEN'
@@ -218,6 +228,13 @@ projectsRouter.post('/:id/workspace', async (c) => {
 
   log.info({ projectId }, 'workspace opened successfully')
   if (links?.agentUrl?.url) agentUrls.set(projectId, links.agentUrl.url)
+
+  // Track which key opened this project (for continuation detection)
+  const authNow = loadStoredAuth()
+  if (authNow?.key) {
+    db.prepare("UPDATE projects SET api_key_hash = ? WHERE id = ?").run(hashKey(authNow.key), projectId)
+  }
+
   return c.json({ 
     ok: true, 
     sandbox: { host: creds.ipv4, port: creds.sshPort, user: creds.sshUsername },
