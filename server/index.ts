@@ -40,7 +40,7 @@ await cli.resolveBinary()
   const auth = loadStoredAuth()
   if (auth?.key) {
     const result = await cli.listProjects()
-    if (result.ok) {
+    if (result.ok && result.data?.projects) {
       const remoteIds = new Set(result.data.projects.map((p: any) => p.id))
       const local = getDB().prepare('SELECT id FROM projects').all() as { id: string }[]
       let cleaned = 0
