@@ -134,22 +134,24 @@ function ActionBtn({ onClick, active, activeColor, children, title }: {
     <button
       onClick={onClick}
       title={title}
-      className="flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium transition-all duration-150 select-none"
+      className="flex items-center gap-2 h-8 px-3.5 rounded-xl text-[13px] font-medium transition-all duration-150 select-none"
       style={{
-        background: active ? `${activeColor}18` : 'rgba(255,255,255,0.05)',
-        border: `1px solid ${active ? `${activeColor}30` : 'rgba(255,255,255,0.08)'}`,
-        color: active ? activeColor : 'rgba(235,235,245,0.4)',
+        background: active ? `${activeColor}18` : 'rgba(255,255,255,0.06)',
+        border: `1px solid ${active ? `${activeColor}35` : 'rgba(255,255,255,0.1)'}`,
+        color: active ? activeColor : 'rgba(235,235,245,0.5)',
       }}
       onMouseEnter={e => {
         if (!active) {
-          (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.09)'
-          ;(e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.75)'
+          (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.1)'
+          ;(e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.85)'
+          ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.16)'
         }
       }}
       onMouseLeave={e => {
         if (!active) {
-          (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)'
-          ;(e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.4)'
+          (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.06)'
+          ;(e.currentTarget as HTMLElement).style.color = 'rgba(235,235,245,0.5)'
+          ;(e.currentTarget as HTMLElement).style.borderColor = 'rgba(255,255,255,0.1)'
         }
       }}
     >
@@ -161,33 +163,33 @@ function ActionBtn({ onClick, active, activeColor, children, title }: {
 // ─── Icons ────────────────────────────────────────────────────────────────────
 
 const CopyIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
   </svg>
 )
 
 const CheckIcon = ({ color }: { color?: string }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={color || 'currentColor'} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color || 'currentColor'} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12"/>
   </svg>
 )
 
 const RetryIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
     <path d="M3 3v5h5"/>
   </svg>
 )
 
 const ContinueIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="5 12 19 12"/><polyline points="12 5 19 12 12 19"/>
   </svg>
 )
 
 const WarnIcon = () => (
-  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
     <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
   </svg>
@@ -229,7 +231,7 @@ export function MessageBubble({ message, onRetry, onContinue }: {
 
           {/* Action bar — slides up on hover */}
           <div
-            className="absolute -bottom-8 right-0 flex items-center gap-1 transition-all duration-200 opacity-0 group-hover:opacity-100"
+            className="absolute -bottom-10 right-0 flex items-center gap-1.5 transition-all duration-200 opacity-0 group-hover:opacity-100"
             style={{ transform: 'translateY(2px)' }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(0)' }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.transform = 'translateY(2px)' }}
@@ -298,7 +300,7 @@ export function MessageBubble({ message, onRetry, onContinue }: {
             {onContinue && (
               <button
                 onClick={onContinue}
-                className="flex items-center gap-1.5 h-6 px-2.5 rounded-lg text-[12px] font-medium transition-all duration-150"
+                className="flex items-center gap-2 h-8 px-3.5 rounded-xl text-[13px] font-medium transition-all duration-150"
                 style={{
                   background: 'rgba(10,132,255,0.12)',
                   border: '1px solid rgba(10,132,255,0.25)',

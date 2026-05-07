@@ -150,7 +150,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
             </div>
           </div>
         ) : (
-          <div className="px-6 py-6 flex flex-col gap-6 max-w-4xl mx-auto w-full">
+          <div className="px-6 py-6 flex flex-col gap-8 max-w-4xl mx-auto w-full">
             {messages.map((msg, idx) => {
               const isLastUserMsg = msg.role === 'user' && !messages.slice(idx + 1).some(m => m.role === 'user')
               const isLastMsg = idx === messages.length - 1
