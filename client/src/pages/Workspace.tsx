@@ -28,9 +28,11 @@ import { LogsDialog } from '../components/dialogs/LogsDialog'
 import { ContinuationDialog } from '../components/dialogs/ContinuationDialog'
 import { cn } from '../lib/utils'
 
-function ResizeHandle({ onResize, direction = 'horizontal' }: {
+function ResizeHandle({ onResize, direction = 'horizontal', onDragStart, onDragEnd }: {
   onResize: (delta: number) => void
   direction?: 'horizontal' | 'vertical'
+  onDragStart?: () => void
+  onDragEnd?: () => void
 }) {
   const dragging = useRef(false)
   const last = useRef(0)
@@ -41,6 +43,7 @@ function ResizeHandle({ onResize, direction = 'horizontal' }: {
     last.current = direction === 'horizontal' ? e.clientX : e.clientY
     document.body.style.cursor = direction === 'horizontal' ? 'col-resize' : 'row-resize'
     document.body.style.userSelect = 'none'
+    onDragStart?.()
 
     const onMove = (ev: MouseEvent) => {
       if (!dragging.current) return
@@ -52,6 +55,7 @@ function ResizeHandle({ onResize, direction = 'horizontal' }: {
       dragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
+      onDragEnd?.()
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -62,17 +66,17 @@ function ResizeHandle({ onResize, direction = 'horizontal' }: {
   if (direction === 'horizontal') {
     return (
       <div onMouseDown={onMouseDown}
-        className="flex-shrink-0 w-1 cursor-col-resize group relative"
+        className="flex-shrink-0 w-1 cursor-col-resize group relative hover:bg-[#0a84ff]/40 transition-colors"
         style={{ background: 'rgba(255,255,255,0.06)' }}>
-        <div className="absolute inset-y-0 -left-1 -right-1 group-hover:bg-[#0a84ff] transition-colors opacity-0 group-hover:opacity-100" />
+        <div className="absolute inset-y-0 -left-1 -right-1" />
       </div>
     )
   }
   return (
     <div onMouseDown={onMouseDown}
-      className="flex-shrink-0 h-1 cursor-row-resize group relative"
+      className="flex-shrink-0 h-1 cursor-row-resize group relative hover:bg-[#0a84ff]/40 transition-colors"
       style={{ background: 'rgba(255,255,255,0.06)' }}>
-      <div className="absolute inset-x-0 -top-1 -bottom-1 group-hover:bg-[#0a84ff] transition-colors opacity-0 group-hover:opacity-100" />
+      <div className="absolute inset-x-0 -top-1 -bottom-1" />
     </div>
   )
 }
@@ -106,10 +110,11 @@ export function WorkspacePage() {
   const [lastSession, setLastSession] = useState<any>(null)
   const [resuming, setResuming] = useState(false)
 
-  const [sidebarW, setSidebarW] = useState(18)
-  const [rightW, setRightW] = useState(40)
+  const [sidebarW, setSidebarW] = useState(220)
+  const [rightW, setRightW] = useState(480)
   const [termH, setTermH] = useState(240)
   const [previewH, setPreviewH] = useState(300)
+  const [dragging, setDragging] = useState(false)
 
   useProjectEvents(projectId ?? null)
   useAutoSave(projectId ?? null)
@@ -205,7 +210,6 @@ export function WorkspacePage() {
   }
 
   const rightVisible = openFiles.length > 0 || showTerminal || showPreview
-  const creditsCritical = credits && credits.balance < 2
   const { differentKey, snapshotAt } = continuationStore
 
   if (connecting) {
@@ -262,18 +266,7 @@ export function WorkspacePage() {
         )}
         <div className="flex items-center gap-2 ml-auto">
           <ModelSelector />
-          <CreditsBar />
-          {creditsCritical && !differentKey && (
-            <button onClick={() => setShowCredits(true)}
-              className="flex items-center gap-2 h-8 px-3 rounded-lg bg-[#ff9f0a]/10 border border-[#ff9f0a]/20 text-[13px] text-[#ff9f0a] font-medium hover:bg-[#ff9f0a]/15 transition-colors">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-                <line x1="12" y1="9" x2="12" y2="13"/>
-                <line x1="12" y1="17" x2="12.01" y2="17"/>
-              </svg>
-              Low credits
-            </button>
-          )}
+          <CreditsBar onClick={() => setShowCredits(true)} />
           <div className="h-5 w-px bg-white/[0.06]" />
           <button onClick={() => setChatVisible(v => !v)}
             className={cn('flex items-center gap-2 h-8 px-3 rounded-lg transition-colors text-[13px] font-medium',
@@ -357,49 +350,64 @@ export function WorkspacePage() {
 
       {/* Main layout */}
       {!differentKey ? (
-        <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className="flex-1 flex overflow-hidden min-h-0 relative">
+          {/* Drag overlay — prevents iframes from capturing mouse during resize */}
+          {dragging && <div className="absolute inset-0 z-50" style={{ cursor: 'inherit' }} />}
+
           {sidebarVisible && (
             <>
-              <div style={{ width: `${sidebarW}vw`, flexShrink: 0, minWidth: 200, maxWidth: '40vw' }}
+              <div style={{ width: sidebarW, flexShrink: 0, minWidth: 180, maxWidth: 480 }}
                 className="flex flex-col overflow-hidden border-r border-white/[0.06]">
                 <FileTree projectId={projectId!} />
               </div>
-              <ResizeHandle onResize={d => {
-                const vw = window.innerWidth / 100
-                setSidebarW(w => Math.max(200 / vw, Math.min(40, w + d / vw)))
-              }} />
+              <ResizeHandle
+                onDragStart={() => setDragging(true)}
+                onDragEnd={() => setDragging(false)}
+                onResize={d => setSidebarW(w => Math.max(180, Math.min(480, w + d)))}
+              />
             </>
           )}
 
           {chatVisible && (
-            <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 300 }}>
+            <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 280 }}>
               <ChatPanel projectId={projectId!} disableInput={differentKey} />
             </div>
           )}
 
           {rightVisible && (
             <>
-              <ResizeHandle onResize={d => {
-                const vw = window.innerWidth / 100
-                setRightW(w => Math.max(280 / vw, Math.min(60, w - d / vw)))
-              }} />
-              <div style={{ width: `${rightW}vw`, flexShrink: 0, minWidth: 280, maxWidth: '60vw' }}
+              <ResizeHandle
+                onDragStart={() => setDragging(true)}
+                onDragEnd={() => setDragging(false)}
+                onResize={d => setRightW(w => Math.max(280, Math.min(window.innerWidth * 0.7, w - d)))}
+              />
+              <div style={{ width: rightW, flexShrink: 0, minWidth: 280, maxWidth: '70vw' }}
                 className="flex flex-col overflow-hidden border-l border-white/[0.06]">
                 <div className="flex-1 overflow-hidden min-h-0">
                   <Editor projectId={projectId!} />
                 </div>
                 {showPreview && (
                   <>
-                    <ResizeHandle direction="vertical" onResize={d => setPreviewH(h => Math.max(120, Math.min(window.innerHeight * 0.6, h - d)))} />
-                    <div style={{ height: previewH, flexShrink: 0, maxHeight: '60vh' }} className="overflow-hidden">
+                    <ResizeHandle
+                      direction="vertical"
+                      onDragStart={() => setDragging(true)}
+                      onDragEnd={() => setDragging(false)}
+                      onResize={d => setPreviewH(h => Math.max(120, Math.min(window.innerHeight * 0.65, h - d)))}
+                    />
+                    <div style={{ height: previewH, flexShrink: 0 }} className="overflow-hidden">
                       <Preview projectId={projectId!} />
                     </div>
                   </>
                 )}
                 {showTerminal && (
                   <>
-                    <ResizeHandle direction="vertical" onResize={d => setTermH(h => Math.max(100, Math.min(window.innerHeight * 0.5, h - d)))} />
-                    <div style={{ height: termH, flexShrink: 0, maxHeight: '50vh' }} className="overflow-hidden">
+                    <ResizeHandle
+                      direction="vertical"
+                      onDragStart={() => setDragging(true)}
+                      onDragEnd={() => setDragging(false)}
+                      onResize={d => setTermH(h => Math.max(100, Math.min(window.innerHeight * 0.55, h - d)))}
+                    />
+                    <div style={{ height: termH, flexShrink: 0 }} className="overflow-hidden">
                       <TerminalPanel projectId={projectId!} />
                     </div>
                   </>
