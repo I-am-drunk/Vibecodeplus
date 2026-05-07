@@ -114,6 +114,12 @@ authRouter.post('/rotate', async (c) => {
 
   const previousKey = cli.getApiKey()
 
+  // Block reuse of the same key (e.g. when credits are exhausted)
+  if (previousKey && apiKey === previousKey) {
+    log.warn('rotation blocked - same API key as current')
+    return c.json({ error: 'This is the same API key you are already using. Please enter a different key with available credits.', code: 'SAME_KEY' }, 400)
+  }
+
   cli.setApiKey(apiKey)
   const result = await cli.getUser()
 
