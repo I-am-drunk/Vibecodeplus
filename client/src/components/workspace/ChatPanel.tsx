@@ -56,7 +56,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
     }).catch(err => {
       addClientLog('ChatPanel', 'api.listSessions failed', { error: String(err), stack: err instanceof Error ? err.stack : undefined })
     })
-  }, [projectId, loadSession])
+  }, [projectId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })

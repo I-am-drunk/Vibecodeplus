@@ -57,8 +57,9 @@ class SSHManager {
         host: (creds as any).ipv4 || creds!.host,
         port: (creds as any).sshPort || creds!.port,
         username: (creds as any).sshUsername || creds!.user,
-        keepaliveInterval: 30_000,
-        keepaliveCountMax: 3,
+        keepaliveInterval: 10_000,
+        keepaliveCountMax: 10,
+        readyTimeout: 30_000,
       }
       if ((creds as any).sshPassword) config.password = (creds as any).sshPassword
       else if (creds!.key_path) {
