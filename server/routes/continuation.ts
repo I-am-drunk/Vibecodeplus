@@ -7,6 +7,7 @@ import { sshManager } from '../ssh/manager.ts'
 import { captureNow, pushToProject } from '../continuation/capture.ts'
 import { agentUrls } from './projects.ts'
 import { createLogger } from '../lib/logger.ts'
+import { fileWatcher } from '../ssh/watcher.ts'
 
 const log = createLogger('continuation')
 
@@ -86,8 +87,11 @@ continuationRouter.post('/enact', async (c) => {
 
     log.info({ sourceProjectId, newProjectId }, 'continuation complete')
     
-    // Delete the old orphaned project from local DB
+    // Delete the old orphaned project from local DB and stop all associated resources
     db.prepare('DELETE FROM projects WHERE id = ?').run(sourceProjectId)
+    fileWatcher.stop(sourceProjectId)
+    sshManager.closeConnection(sourceProjectId).catch(() => {})
+    agentUrls.delete(sourceProjectId)
     log.info({ sourceProjectId }, 'deleted orphaned project from local DB')
     
     return c.json({ ok: true, newProjectId, name })

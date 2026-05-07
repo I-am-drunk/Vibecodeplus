@@ -124,10 +124,13 @@ class SSHManager {
     }
   }
 
+  async closeConnection(projectId: string) {
+    const conn = this.connections.get(projectId)
+    if (conn) { conn.end(); this.connections.delete(projectId); this.credentials.delete(projectId) }
+  }
+
   async closeAll() {
-    for (const [id, conn] of this.connections) {
-      conn.end()
-    }
+    for (const [, conn] of this.connections) conn.end()
     this.connections.clear()
     this.credentials.clear()
   }

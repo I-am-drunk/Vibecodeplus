@@ -33,14 +33,18 @@ export function ToolCallCard({ name, input, result, status }: ToolCallCardProps)
   const colorClass = TOOL_COLORS[name] || TOOL_COLORS.default
   
   const getInputSummary = () => {
-    if (name === 'shell') return input.command
-    if (name === 'read') return input.operations?.[0]?.path || input.path
-    if (name === 'write') return `${input.path} (${input.command})`
-    if (name === 'glob') return input.pattern
-    if (name === 'grep') return input.pattern
-    if (name === 'code') return input.operation
-    return JSON.stringify(input).substring(0, 60)
+    if (!input) return ''
+    if (name === 'shell') return input.command ?? ''
+    if (name === 'read') return input.operations?.[0]?.path || input.path || ''
+    if (name === 'write') return `${input.path ?? ''} (${input.command ?? ''})`
+    if (name === 'glob') return input.pattern ?? ''
+    if (name === 'grep') return input.pattern ?? ''
+    if (name === 'code') return input.operation ?? ''
+    const s = JSON.stringify(input)
+    return s ? s.substring(0, 60) : ''
   }
+
+  const safeResult = typeof result === 'string' ? result : result ? JSON.stringify(result) : ''
 
   const StatusIcon = status === 'running' ? Loader2 : status === 'success' ? CheckCircle : XCircle
   const statusColor = status === 'running' ? 'text-[#5ac8fa]' : status === 'success' ? 'text-[#30d158]' : 'text-[#ff453a]'
@@ -76,16 +80,16 @@ export function ToolCallCard({ name, input, result, status }: ToolCallCardProps)
             </div>
 
             {/* Result preview */}
-            {result && status === 'success' && (
+            {safeResult && status === 'success' && (
               <div className="mt-2 text-[11px] font-mono text-[#30d158]/70 bg-[#30d158]/[0.05] rounded-lg px-2.5 py-1.5 border border-[#30d158]/10 max-h-20 overflow-hidden">
-                {result.substring(0, 200)}
-                {result.length > 200 && '...'}
+                {safeResult.substring(0, 200)}
+                {safeResult.length > 200 && '...'}
               </div>
             )}
 
-            {result && status === 'error' && (
+            {safeResult && status === 'error' && (
               <div className="mt-2 text-[11px] font-mono text-[#ff453a]/70 bg-[#ff453a]/[0.05] rounded-lg px-2.5 py-1.5 border border-[#ff453a]/10">
-                {result.substring(0, 200)}
+                {safeResult.substring(0, 200)}
               </div>
             )}
           </div>

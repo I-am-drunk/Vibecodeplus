@@ -44,10 +44,15 @@ class WebSocketHub {
     if (!subs) return
     const payload = JSON.stringify(data)
     for (const ws of subs) {
-      try {
-        if (ws.readyState === WebSocket.OPEN) ws.send(payload)
-      } catch { /* client disconnected */ }
+      if (ws.readyState !== WebSocket.OPEN) {
+        // Prune dead connections
+        subs.delete(ws)
+        this.clients.delete(ws)
+        continue
+      }
+      try { ws.send(payload) } catch { subs.delete(ws); this.clients.delete(ws) }
     }
+    if (subs.size === 0) this.subscriptions.delete(channel)
   }
 
   broadcastAll(data: Record<string, unknown>) {
