@@ -30,7 +30,7 @@ authRouter.post('/login', async (c) => {
   log.info({ userId: result.data.id, email: result.data.email, plan: result.data.plan }, 'login successful')
   
   const credits = result.data.credits || { balance: 0, currency: 'USD' }
-  const balanceInDollars = credits.balance / 100
+  const balanceInDollars = credits.balance  // already in dollars from getUser()
   
   // Check if credits are zero or very low
   if (credits.balance === 0) {
@@ -132,7 +132,7 @@ authRouter.post('/rotate', async (c) => {
   log.info({ userId: result.data.id, email: result.data.email, plan: result.data.plan }, 'API key rotated successfully')
   
   const credits = result.data.credits || { balance: 0, currency: 'USD' }
-  const balanceInDollars = credits.balance / 100
+  const balanceInDollars = credits.balance  // already in dollars from getUser()
   
   // Check if credits are zero or very low
   if (credits.balance === 0) {
