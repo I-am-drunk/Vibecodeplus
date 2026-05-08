@@ -17,6 +17,8 @@ interface Props {
 const stageLabels: Record<string, string> = {
   queued: 'Queued',
   creating_target: 'Creating destination project',
+  reusing_target: 'Reusing existing destination project',
+  cleaning_orphan_target: 'Cleaning stale destination project',
   acquiring_target: 'Acquiring destination sandbox',
   transferring_snapshot: 'Transferring snapshot',
   verifying_target: 'Verifying destination project',

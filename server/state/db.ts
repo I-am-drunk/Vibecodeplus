@@ -119,6 +119,16 @@ export function initDB(): Database {
 
   ensureMigrationTables(db)
 
+  safeAlter('ALTER TABLE project_migrations ADD COLUMN stage_message TEXT')
+  safeAlter('ALTER TABLE project_migrations ADD COLUMN warning TEXT')
+  safeAlter('ALTER TABLE project_migrations ADD COLUMN source_preserved INTEGER NOT NULL DEFAULT 1')
+
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_migrations_single_active_source
+      ON project_migrations(source_project_id)
+      WHERE status IN ('pending', 'running');
+  `)
+
   return db
 }
 

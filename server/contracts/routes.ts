@@ -71,14 +71,21 @@ export async function parsePatchProjectRequest(raw: unknown): Promise<PatchProje
   return { defaultModel: defaultModel! }
 }
 
+const MAX_CHAT_PROMPT_CHARS = 200_000
+
 export async function parseChatSendRequest(raw: unknown): Promise<ChatSendRequest> {
   const body = expectRecord(raw)
 
-  const projectId = readString(body, 'projectId', { required: true, minLength: 1 })
-  const prompt = readString(body, 'prompt', { required: true, minLength: 1 })
-  const model = readString(body, 'model')
-  const sessionId = readString(body, 'sessionId')
-  const agentUrl = readString(body, 'agentUrl')
+  const projectId = readString(body, 'projectId', { required: true, minLength: 1, maxLength: 128 })
+  const prompt = readString(body, 'prompt', {
+    required: true,
+    minLength: 1,
+    maxLength: MAX_CHAT_PROMPT_CHARS,
+    trim: false,
+  })
+  const model = readString(body, 'model', { maxLength: 128 })
+  const sessionId = readString(body, 'sessionId', { maxLength: 128 })
+  const agentUrl = readString(body, 'agentUrl', { maxLength: 2048 })
 
   return {
     projectId: projectId!,

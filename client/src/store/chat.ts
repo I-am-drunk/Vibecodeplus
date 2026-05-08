@@ -36,6 +36,7 @@ interface StreamFinalizeParams {
   streamId?: string | null
   content: string
   terminal: 'complete' | 'cut_off' | 'empty' | 'error' | 'aborted'
+  errorMessage?: string | null
 }
 
 interface ChatState {
@@ -50,6 +51,7 @@ interface ChatState {
   activeStreamId: string | null
   streamingSessionId: string | null
   finalizedStreamIds: Set<string>
+  streamError: string | null
 
   setSessions: (sessions: ChatSession[]) => void
   setActiveSession: (id: string | null) => void
@@ -58,6 +60,7 @@ interface ChatState {
   beginStream: (params: { sessionId: string; streamId: string }) => void
   appendStreamText: (text: string) => void
   finalizeStream: (params: StreamFinalizeParams) => void
+  failActiveStream: (errorMessage: string) => void
   setStreaming: (value: boolean) => void
   setCreditsExhausted: (value: boolean) => void
   setModel: (model: string) => void
@@ -67,7 +70,7 @@ interface ChatState {
   reset: () => void
 }
 
-export const useChatStore = create<ChatState>((set) => ({
+export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   activeSessionId: null,
   messages: [],
@@ -79,6 +82,7 @@ export const useChatStore = create<ChatState>((set) => ({
   activeStreamId: null,
   streamingSessionId: null,
   finalizedStreamIds: new Set(),
+  streamError: null,
 
   setSessions: (sessions) => set({ sessions }),
 
@@ -102,11 +106,12 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: true,
       streamingText: '',
       toolCalls: [],
+      streamError: null,
     })),
 
   appendStreamText: (text) => set((state) => ({ streamingText: state.streamingText + text })),
 
-  finalizeStream: ({ content, terminal, streamId, sessionId }) =>
+  finalizeStream: ({ content, terminal, streamId, sessionId, errorMessage }) =>
     set((state) => {
       if (streamId && state.finalizedStreamIds.has(streamId)) {
         return {
@@ -114,10 +119,19 @@ export const useChatStore = create<ChatState>((set) => ({
           streamingText: '',
           activeStreamId: null,
           streamingSessionId: null,
+          streamError: terminal === 'error' ? (errorMessage ?? state.streamError) : null,
         }
       }
 
-      const hasContent = Boolean(content)
+      const resolvedContent =
+        content ||
+        (terminal === 'error'
+          ? errorMessage ?? 'The assistant could not complete this response. Please retry.'
+          : terminal === 'aborted'
+            ? errorMessage ?? 'Generation stopped.'
+            : '')
+
+      const hasContent = Boolean(resolvedContent)
       const hasUnassignedToolCalls = state.toolCalls.some((toolCall) => !toolCall.messageId)
       const shouldPersistMessage = hasContent || hasUnassignedToolCalls || terminal !== 'empty'
 
@@ -137,6 +151,7 @@ export const useChatStore = create<ChatState>((set) => ({
           activeStreamId: null,
           streamingSessionId: null,
           finalizedStreamIds: nextFinalized,
+          streamError: terminal === 'error' ? (errorMessage ?? null) : null,
         }
       }
 
@@ -144,7 +159,7 @@ export const useChatStore = create<ChatState>((set) => ({
       const assistantMessage: Message = {
         id: messageId,
         role: 'assistant',
-        content: content || '',
+        content: resolvedContent,
         createdAt: new Date().toISOString(),
         cutOff: terminal !== 'complete',
         terminalStatus: terminal,
@@ -158,11 +173,25 @@ export const useChatStore = create<ChatState>((set) => ({
         finalizedStreamIds: nextFinalized,
         messages: [...state.messages, assistantMessage],
         activeSessionId: sessionId ?? state.activeSessionId,
+        streamError: terminal === 'error' ? (errorMessage ?? null) : null,
         toolCalls: state.toolCalls.map((toolCall) =>
           toolCall.messageId ? toolCall : { ...toolCall, messageId },
         ),
       }
     }),
+
+  failActiveStream: (errorMessage) => {
+    const state = get()
+    if (!state.isStreaming) return
+
+    get().finalizeStream({
+      sessionId: state.streamingSessionId,
+      streamId: state.activeStreamId,
+      content: state.streamingText,
+      terminal: 'error',
+      errorMessage,
+    })
+  },
 
   setStreaming: (value) =>
     set((state) => ({
@@ -170,6 +199,7 @@ export const useChatStore = create<ChatState>((set) => ({
       streamingText: value ? state.streamingText : '',
       activeStreamId: value ? state.activeStreamId : null,
       streamingSessionId: value ? state.streamingSessionId : null,
+      streamError: value ? state.streamError : null,
     })),
 
   setCreditsExhausted: (value) => set({ creditsExhausted: value }),
@@ -206,5 +236,6 @@ export const useChatStore = create<ChatState>((set) => ({
       activeStreamId: null,
       streamingSessionId: null,
       finalizedStreamIds: new Set(),
+      streamError: null,
     }),
 }))

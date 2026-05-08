@@ -97,6 +97,7 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
                   {isForbidden
                     ? 'Your key is invalid or restricted'
                     : 'Enter a new key to keep going'}
+                  {projectId ? ` · Project ${projectId}` : ''}
                 </p>
               </div>
             </div>

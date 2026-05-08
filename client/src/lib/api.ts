@@ -75,13 +75,46 @@ function normalizeErrorPayload(payload: unknown, status: number): { message: str
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: 'include',
-  })
+type RequestOptions = {
+  timeoutMs?: number
+}
+
+const DEFAULT_TIMEOUT_MS = 30_000
+
+async function request<T>(method: string, path: string, body?: unknown, opts?: RequestOptions): Promise<T> {
+  const controller = new AbortController()
+  const timeoutMs = typeof opts?.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : DEFAULT_TIMEOUT_MS
+  const timeout = globalThis.setTimeout(() => {
+    controller.abort('request timeout')
+  }, timeoutMs)
+
+  let res: Response
+
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'include',
+      signal: controller.signal,
+    })
+  } catch (error) {
+    globalThis.clearTimeout(timeout)
+
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new APIError('Request timed out. Please try again.', 408, 'REQUEST_TIMEOUT', {
+        path,
+        timeoutMs,
+      })
+    }
+
+    throw new APIError('Network request failed. Please retry.', 0, 'NETWORK_ERROR', {
+      path,
+      reason: error instanceof Error ? error.message : String(error),
+    })
+  }
+
+  globalThis.clearTimeout(timeout)
 
   const payload = await res.json().catch(() => undefined)
 
@@ -112,6 +145,8 @@ type MigrationStatus = {
   stage:
     | 'queued'
     | 'creating_target'
+    | 'reusing_target'
+    | 'cleaning_orphan_target'
     | 'acquiring_target'
     | 'transferring_snapshot'
     | 'verifying_target'
@@ -148,11 +183,11 @@ export const api = {
       snapshotAt?: string | null
       canonicalProjectId?: string
       mappedFromProjectId?: string | null
-    }>('POST', `/api/projects/${id}/workspace`),
+    }>('POST', `/api/projects/${id}/workspace`, undefined, { timeoutMs: 90_000 }),
   closeWorkspace: (id: string) => request<{ ok: boolean }>('DELETE', `/api/projects/${id}/workspace`).catch(() => ({ ok: true })),
 
   sendMessage: (body: { projectId: string; model: string; prompt: string; sessionId?: string; agentUrl?: string }) =>
-    request<{ sessionId: string; streamId: string; canonicalProjectId?: string }>('POST', '/api/chat', body),
+    request<{ sessionId: string; streamId: string; canonicalProjectId?: string }>('POST', '/api/chat', body, { timeoutMs: 45_000 }),
   abortChat: (projectId: string, sessionId: string) =>
     request<{ ok: boolean; aborted: boolean }>('POST', '/api/chat/abort', { projectId, sessionId }),
   stopAgent: (projectId: string, sessionId: string) =>
@@ -163,15 +198,29 @@ export const api = {
 
   listDir: (projectId: string, path: string) =>
     request<{ entries: any[] }>('GET', `/api/files?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`),
-  readFile: (projectId: string, path: string) =>
-    fetch(`${BASE}/api/files/content?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`, {
-      credentials: 'include',
-    }).then(async (res) => {
+  readFile: async (projectId: string, path: string) => {
+    const controller = new AbortController()
+    const timeout = globalThis.setTimeout(() => controller.abort('request timeout'), 30_000)
+
+    try {
+      const res = await fetch(`${BASE}/api/files/content?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path)}`, {
+        credentials: 'include',
+        signal: controller.signal,
+      })
+
       if (res.ok) return res.text()
       const payload = await res.json().catch(() => undefined)
       const normalized = normalizeErrorPayload(payload, res.status)
       throw new APIError(normalized.message, res.status, normalized.code, normalized.details)
-    }),
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new APIError('Request timed out. Please try again.', 408, 'REQUEST_TIMEOUT')
+      }
+      throw error
+    } finally {
+      globalThis.clearTimeout(timeout)
+    }
+  },
   writeFile: (projectId: string, path: string, content: string) => request<{ ok: boolean }>('PUT', '/api/files/content', { projectId, path, content }),
   mkdir: (projectId: string, path: string) => request<{ ok: boolean }>('POST', '/api/files/mkdir', { projectId, path }),
   deleteFile: (projectId: string, path: string) => request<{ ok: boolean }>('DELETE', '/api/files', { projectId, path }),

@@ -5,6 +5,8 @@ export type MigrationStatus = 'pending' | 'running' | 'completed' | 'failed' | '
 export type MigrationStage =
   | 'queued'
   | 'creating_target'
+  | 'reusing_target'
+  | 'cleaning_orphan_target'
   | 'acquiring_target'
   | 'transferring_snapshot'
   | 'verifying_target'
@@ -77,6 +79,9 @@ export function ensureMigrationTables(dbInput?: Database) {
     CREATE INDEX IF NOT EXISTS idx_project_migrations_source ON project_migrations(source_project_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_project_migrations_target ON project_migrations(target_project_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS idx_project_migrations_status ON project_migrations(status, updated_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_migrations_single_active_source
+      ON project_migrations(source_project_id)
+      WHERE status IN ('pending', 'running');
     CREATE INDEX IF NOT EXISTS idx_project_aliases_canonical ON project_aliases(canonical_project_id);
   `)
 }
@@ -128,11 +133,29 @@ export function getProjectMigration(migrationId: string, dbInput?: Database): Pr
   return row ? mapMigrationRow(row) : null
 }
 
+export function listMigrationsForSource(sourceProjectId: string, dbInput?: Database): ProjectMigrationRecord[] {
+  const db = dbOrDefault(dbInput)
+  const rows = db
+    .prepare('SELECT * FROM project_migrations WHERE source_project_id = ? ORDER BY started_at DESC, rowid DESC')
+    .all(sourceProjectId)
+
+  return rows.map((row) => mapMigrationRow(row))
+}
+
 export function getLatestMigrationForSource(sourceProjectId: string, dbInput?: Database): ProjectMigrationRecord | null {
   const db = dbOrDefault(dbInput)
-  const row = db.prepare(
-    `SELECT * FROM project_migrations WHERE source_project_id = ? ORDER BY started_at DESC LIMIT 1`,
-  ).get(sourceProjectId)
+  const row = db
+    .prepare(`SELECT * FROM project_migrations WHERE source_project_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+    .get(sourceProjectId)
+  return row ? mapMigrationRow(row) : null
+}
+
+export function getLatestMigrationForTarget(targetProjectId: string, dbInput?: Database): ProjectMigrationRecord | null {
+  const db = dbOrDefault(dbInput)
+  const row = db
+    .prepare(`SELECT * FROM project_migrations WHERE target_project_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1`)
+    .get(targetProjectId)
+
   return row ? mapMigrationRow(row) : null
 }
 
@@ -160,6 +183,38 @@ export function setMigrationStage(
   ).run(stage, stageMessage ?? null, status, migrationId)
 }
 
+export function requeueMigration(
+  migrationId: string,
+  opts?: { stage?: MigrationStage; stageMessage?: string; clearError?: boolean },
+  dbInput?: Database,
+): ProjectMigrationRecord {
+  const db = dbOrDefault(dbInput)
+
+  db.prepare(`
+    UPDATE project_migrations
+    SET
+      status = 'pending',
+      stage = ?,
+      stage_message = ?,
+      warning = CASE WHEN ? THEN NULL ELSE warning END,
+      error_code = CASE WHEN ? THEN NULL ELSE error_code END,
+      error_message = CASE WHEN ? THEN NULL ELSE error_message END,
+      failed_at = NULL,
+      completed_at = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    opts?.stage ?? 'queued',
+    opts?.stageMessage ?? 'Retry requested',
+    opts?.clearError === false ? 0 : 1,
+    opts?.clearError === false ? 0 : 1,
+    opts?.clearError === false ? 0 : 1,
+    migrationId,
+  )
+
+  return getProjectMigration(migrationId, db)!
+}
+
 export function markMigrationCompleted(
   migrationId: string,
   targetProjectId: string,
@@ -177,6 +232,7 @@ export function markMigrationCompleted(
       source_preserved = ?,
       error_code = NULL,
       error_message = NULL,
+      failed_at = NULL,
       completed_at = datetime('now'),
       updated_at = datetime('now')
     WHERE id = ?
@@ -212,6 +268,7 @@ export function markMigrationFailed(
       warning = ?,
       error_code = ?,
       error_message = ?,
+      completed_at = NULL,
       failed_at = datetime('now'),
       updated_at = datetime('now')
     WHERE id = ?

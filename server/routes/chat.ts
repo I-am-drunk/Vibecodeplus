@@ -12,6 +12,15 @@ import { agentUrls } from '../state/agents.ts'
 
 const log = createLogger('chat')
 
+function readTimeoutMs(raw: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(min, Math.min(max, parsed))
+}
+
+const STREAM_IDLE_TIMEOUT_MS = readTimeoutMs(process.env.VS_CHAT_STREAM_IDLE_TIMEOUT_MS, 90_000, 5_000, 10 * 60_000)
+const STREAM_HARD_TIMEOUT_MS = readTimeoutMs(process.env.VS_CHAT_STREAM_HARD_TIMEOUT_MS, 10 * 60_000, 30_000, 30 * 60_000)
+
 export const chatRouter = new Hono()
 
 function extractTextChunk(event: any): string {
@@ -41,7 +50,7 @@ function normalizeToolResult(event: any) {
   return {
     tool_use_id: String(payload.tool_use_id),
     content: typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content ?? ''),
-    is_error: !!payload.is_error,
+    is_error: !!payload.is_error || !!event?.is_error,
   }
 }
 
@@ -208,13 +217,46 @@ async function runStreamLifecycle(opts: {
   let sawError = false
   let creditsExhausted = false
   let errorMessage: string | null = null
+  let timedOut = false
 
   const toolCalls: Array<any> = []
+
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  let hardTimer: ReturnType<typeof setTimeout> | undefined
+
+  const clearTimeouts = () => {
+    if (idleTimer) {
+      clearTimeout(idleTimer)
+      idleTimer = undefined
+    }
+    if (hardTimer) {
+      clearTimeout(hardTimer)
+      hardTimer = undefined
+    }
+  }
+
+  const armIdleTimeout = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      timedOut = true
+      errorMessage = 'No response received from the model before timeout. Please retry.'
+      opts.abortController.abort('stream idle timeout')
+    }, STREAM_IDLE_TIMEOUT_MS)
+  }
+
+  armIdleTimeout()
+  hardTimer = setTimeout(() => {
+    timedOut = true
+    errorMessage = 'Model response timed out. Please retry your request.'
+    opts.abortController.abort('stream hard timeout')
+  }, STREAM_HARD_TIMEOUT_MS)
 
   try {
     for await (const event of cli.agentSend(opts.resolvedAgentUrl, opts.model, opts.prompt, {
       signal: opts.abortController.signal,
     })) {
+      armIdleTimeout()
+
       const sequence = streamRegistry.nextSequence(opts.sessionId, opts.streamId)
       if (!sequence) {
         break
@@ -290,11 +332,15 @@ async function runStreamLifecycle(opts: {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (!opts.abortController.signal.aborted) {
+    if (timedOut) {
+      sawError = true
+    } else if (!opts.abortController.signal.aborted) {
       sawError = true
       errorMessage = message
       log.error({ sessionId: opts.sessionId, projectId: opts.projectId, message }, 'stream failed')
     }
+  } finally {
+    clearTimeouts()
   }
 
   const stream = streamRegistry.get(opts.sessionId)
@@ -330,6 +376,7 @@ async function runStreamLifecycle(opts: {
         cutOff: terminal !== 'complete',
         empty: !assistantText,
         creditsExhausted,
+        timedOut,
         errorMessage,
       })
     }
@@ -483,6 +530,13 @@ chatRouter.post('/sessions/:id/export', async (c) => {
 chatRouter.post('/abort', async (c) => {
   try {
     const body = await parseChatControlRequest(await readBody(c))
+    const resolvedProject = resolveCanonicalProjectId(body.projectId)
+
+    const active = streamRegistry.get(body.sessionId)
+    if (active && active.projectId !== resolvedProject.canonicalProjectId) {
+      throw badRequest('sessionId does not belong to projectId')
+    }
+
     const result = streamRegistry.requestAbort(body.sessionId, 'user aborted')
 
     return c.json(
@@ -499,10 +553,15 @@ chatRouter.post('/abort', async (c) => {
 chatRouter.post('/stop', async (c) => {
   try {
     const body = await parseChatControlRequest(await readBody(c))
+    const resolvedProject = resolveCanonicalProjectId(body.projectId)
 
     const active = streamRegistry.get(body.sessionId)
     if (!active) {
       return c.json(success({ ok: true, stopped: false, reason: 'no active stream' }))
+    }
+
+    if (active.projectId !== resolvedProject.canonicalProjectId) {
+      throw badRequest('sessionId does not belong to projectId')
     }
 
     streamRegistry.requestAbort(body.sessionId, 'user stopped')

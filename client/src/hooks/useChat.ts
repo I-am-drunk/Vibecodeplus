@@ -1,6 +1,8 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { api } from '../lib/api'
 import { useChatStore, type Message } from '../store/chat'
+
+const STREAM_WATCHDOG_MS = 120_000
 
 export function resolveRetryUserIndex(messages: Message[], requestedIndex: number): number {
   if (!messages.length) return -1
@@ -19,6 +21,39 @@ export function resolveRetryUserIndex(messages: Message[], requestedIndex: numbe
 export function useChat(projectId: string | null) {
   const model = useChatStore((state) => state.model)
   const sendingRef = useRef(false)
+  const streamWatchdogRef = useRef<number | null>(null)
+
+  const clearStreamWatchdog = useCallback(() => {
+    if (streamWatchdogRef.current) {
+      window.clearTimeout(streamWatchdogRef.current)
+      streamWatchdogRef.current = null
+    }
+  }, [])
+
+  const armStreamWatchdog = useCallback((sessionId: string, streamId: string) => {
+    clearStreamWatchdog()
+
+    streamWatchdogRef.current = window.setTimeout(() => {
+      const state = useChatStore.getState()
+      if (!state.isStreaming) return
+      if (state.activeStreamId && state.activeStreamId !== streamId) return
+
+      state.failActiveStream('The model took too long to respond. Please retry.')
+    }, STREAM_WATCHDOG_MS)
+  }, [clearStreamWatchdog])
+
+  useEffect(() => {
+    const unsubscribe = useChatStore.subscribe((state, previous) => {
+      if (previous.isStreaming && !state.isStreaming) {
+        clearStreamWatchdog()
+      }
+    })
+
+    return () => {
+      unsubscribe()
+      clearStreamWatchdog()
+    }
+  }, [clearStreamWatchdog])
 
   const sendMessage = useCallback(
     async (prompt: string, sessionId?: string | null) => {
@@ -58,6 +93,10 @@ export function useChat(projectId: string | null) {
         if (response.sessionId && chatStore.activeSessionId !== response.sessionId) {
           chatStore.setActiveSession(response.sessionId)
         }
+
+        if (response.sessionId && response.streamId) {
+          armStreamWatchdog(response.sessionId, response.streamId)
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         const lower = message.toLowerCase()
@@ -66,13 +105,14 @@ export function useChat(projectId: string | null) {
           chatStore.setCreditsExhausted(true)
         }
 
+        clearStreamWatchdog()
         chatStore.setStreaming(false)
         throw error
       } finally {
         sendingRef.current = false
       }
     },
-    [model, projectId],
+    [armStreamWatchdog, clearStreamWatchdog, model, projectId],
   )
 
   const retryFromIndex = useCallback(

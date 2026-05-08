@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cli } from '../cli/wrapper.ts'
+import type { VibecodeUser } from '../cli/types.ts'
 import { loadStoredAuth, storeAuth, clearAuth } from '../state/auth.ts'
 import { sshManager } from '../ssh/manager.ts'
 import { processRegistry } from '../process/registry.ts'
@@ -12,14 +13,18 @@ const log = createLogger('auth')
 
 export const authRouter = new Hono()
 
-function formatAuthResponse(user: any) {
-  const credits = user.credits || { balance: 0, used: 0, limit: null }
-  const balanceInDollars = Number(credits.balance || 0)
+function formatAuthResponse(user: VibecodeUser) {
+  const credits = user.credits ?? { balance: 0, used: 0, limit: null }
+  const balanceInDollars = Number.isFinite(credits.balance) ? credits.balance : 0
   const lowCredits = balanceInDollars < 1
 
   return {
     user,
-    credits,
+    credits: {
+      balance: balanceInDollars,
+      used: Number.isFinite(credits.used) ? credits.used : 0,
+      limit: typeof credits.limit === 'number' && Number.isFinite(credits.limit) ? credits.limit : null,
+    },
     lowCredits,
     balanceInDollars,
   }

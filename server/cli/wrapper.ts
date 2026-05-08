@@ -9,6 +9,8 @@ import {
   parseAgentStreamEvent,
   parseCliProjectsPayload,
   parseCliUserPayload,
+  parseCreateProjectPayload,
+  unwrapCliMessageEnvelope,
 } from '../contracts/cli.ts'
 
 const log = createLogger('cli')
@@ -202,7 +204,7 @@ export class VibecodeCliWrapper {
 
         try {
           const parsed = JSON.parse(payload)
-          const event = parseAgentStreamEvent(parsed.message ?? parsed)
+          const event = parseAgentStreamEvent(unwrapCliMessageEnvelope(parsed))
           if (event) {
             yield event
           }
@@ -215,7 +217,7 @@ export class VibecodeCliWrapper {
     if (stdoutBuffer.trim()) {
       try {
         const parsed = JSON.parse(stdoutBuffer.trim())
-        const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
+        const event = parseAgentStreamEvent(unwrapCliMessageEnvelope(parsed))
         if (event) yield event
       } catch {
         // ignore trailing non-json
@@ -233,7 +235,7 @@ export class VibecodeCliWrapper {
     }
 
     if (stderrBuffer.trim()) {
-      log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
+      log.trace({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
     }
   }
 
@@ -283,11 +285,11 @@ export class VibecodeCliWrapper {
     const platform = opts?.template || 'webapp'
     const description = opts?.description || name
 
-    const result = await this.runJSON<any>(['projects', 'create', platform, description])
+    const result = await this.runJSON<unknown>(['projects', 'create', platform, description])
     if (!result.ok) return result
 
-    const id = result.data?.projectId ?? result.data?.id
-    if (!id) {
+    const parsed = parseCreateProjectPayload(result.data)
+    if (!parsed) {
       return {
         ok: false,
         error: {
@@ -300,7 +302,7 @@ export class VibecodeCliWrapper {
     return {
       ok: true,
       data: {
-        id: String(id),
+        id: parsed.id,
         name,
         description,
         created_at: new Date().toISOString(),
@@ -314,7 +316,7 @@ export class VibecodeCliWrapper {
     return this.runJSON(['projects', 'delete', projectId])
   }
 
-  async acquireSandbox(projectId: string): Promise<CLIResult<{ sandbox: any; links?: Record<string, unknown> }>> {
+  async acquireSandbox(projectId: string): Promise<CLIResult<{ sandbox: any; links?: { agentUrl?: string; raw?: Record<string, unknown> } }>> {
     const result = await this.runJSON<unknown>(['sandboxes', 'acquire', projectId])
     if (!result.ok) return result
 

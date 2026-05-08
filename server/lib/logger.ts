@@ -28,13 +28,16 @@ const browserStream = new Writable({
 const prettyStream = buildPretty({ colorize: true, translateTime: 'HH:MM:ss', ignore: 'pid,hostname' })
 const fileStream = createWriteStream(join(logsDir, 'app.log'), { flags: 'a' })
 
+const defaultLevel = process.env.VS_LOG_LEVEL ?? 'info'
+const consoleLevel = process.env.VS_CONSOLE_LOG_LEVEL ?? (process.env.NODE_ENV === 'development' ? 'info' : 'warn')
+
 const multiStream = pino.multistream([
-  { stream: prettyStream, level: 'debug' },
-  { stream: fileStream, level: 'trace' },
-  { stream: browserStream, level: 'trace' },
+  { stream: prettyStream, level: consoleLevel },
+  { stream: fileStream, level: defaultLevel },
+  { stream: browserStream, level: defaultLevel },
 ])
 
-export const logger = pino({ level: 'trace' }, multiStream)
+export const logger = pino({ level: defaultLevel }, multiStream)
 
 export const addBrowserLogClient = (ws: any) => browserClients.add(ws)
 export const removeBrowserLogClient = (ws: any) => browserClients.delete(ws)

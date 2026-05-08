@@ -34,7 +34,11 @@ export const useProjectsStore = create<ProjectsState>((set) => ({
       const { projects } = await api.listProjects()
       set({ projects: projects as Project[], loading: false, error: null })
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error), loading: false })
+      set((state) => ({
+        projects: state.projects,
+        error: error instanceof Error ? error.message : String(error),
+        loading: false,
+      }))
     }
   },
 
