@@ -5,260 +5,260 @@ import { getDB } from '../state/db.ts'
 import { loadStoredAuth } from '../state/auth.ts'
 import { sshManager } from '../ssh/manager.ts'
 import { backupCoordinator } from '../backup/coordinator.ts'
-import { wsHub as hub } from '../ws/hub.ts'
 import { createLogger } from '../lib/logger.ts'
-
-function hashKey(key: string): string {
-  return createHash('sha256').update(key).digest('hex').slice(0, 16)
-}
+import { fileWatcher } from '../ssh/watcher.ts'
 
 const log = createLogger('projects')
 
-// Server-side agentUrl store — always fresh from last openWorkspace
 export const agentUrls = new Map<string, string>()
 
 export const projectsRouter = new Hono()
 
-projectsRouter.get('/', async (c) => {
-  log.debug({}, 'listing projects - from local database')
-  const db = getDB()
+type ProjectRow = {
+  id: string
+  name: string
+  description: string | null
+  default_model: string | null
+  last_opened_at: string | null
+  api_key_hash: string | null
+  snapshot_at: string | null
+  created_at: string
+  updated_at: string
+}
 
-  // Get ONLY projects that were created locally (exist in our DB)
-  const localProjects = db.prepare(`
-    SELECT * FROM projects ORDER BY last_opened_at DESC NULLS LAST, created_at DESC
-  `).all() as any[]
+function hashKey(key: string) {
+  return createHash('sha256').update(key).digest('hex').slice(0, 16)
+}
 
-  log.debug({ count: localProjects.length }, 'found local projects')
+function getCurrentAuthHash() {
+  const auth = loadStoredAuth()
+  return auth?.key ? hashKey(auth.key) : null
+}
 
-  // Enrich with CLI data for projects that still exist on the API
-  const cliResult = await cli.listProjects()
-  const remoteProjects = new Map()
-  if (cliResult.ok) {
-    for (const p of cliResult.data) {
-      remoteProjects.set(p.id, p)
-    }
+function toProjectResponse(row: ProjectRow, remote?: any, currentHash?: string | null) {
+  const differentKey = !!(row.api_key_hash && currentHash && row.api_key_hash !== currentHash)
+
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    sandbox: remote?.sandbox || { status: 'stopped' },
+    defaultModel: row.default_model ?? 'claude-sonnet-4-6',
+    lastOpenedAt: row.last_opened_at ?? null,
+    snapshotAt: row.snapshot_at ?? null,
+    differentKey,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+async function listRemoteProjectsSafe() {
+  const result = await cli.listProjects()
+  if (!result.ok) {
+    log.warn({ error: result.error.message }, 'failed to list remote projects')
+    return new Map<string, any>()
   }
 
-  const projects = localProjects.map((p) => {
-    const remote = remoteProjects.get(p.id)
-    log.trace({ projectId: p.id, existsRemote: !!remote }, 'enriching project')
-    return {
-      id: p.id,
-      name: p.name,
-      description: p.description,
-      sandbox: remote?.sandbox || { status: 'stopped' },
-      defaultModel: p.default_model ?? 'claude-sonnet-4-6',
-      lastOpenedAt: p.last_opened_at ?? null,
-      differentKey: false,
-      created_at: p.created_at,
-      updated_at: p.updated_at,
-    }
-  })
+  return new Map(result.data.map((project: any) => [project.id, project]))
+}
 
-  log.info({ count: projects.length }, 'projects listed successfully')
+projectsRouter.get('/', async (c) => {
+  const db = getDB()
+  const currentHash = getCurrentAuthHash()
+
+  const rows = db.prepare(`
+    SELECT * FROM projects
+    ORDER BY COALESCE(last_opened_at, created_at) DESC
+  `).all() as ProjectRow[]
+
+  const remoteProjects = await listRemoteProjectsSafe()
+  const projects = rows.map((row) => toProjectResponse(row, remoteProjects.get(row.id), currentHash))
+
   return c.json({ projects })
 })
 
 projectsRouter.post('/', async (c) => {
-  const body = await c.req.json()
-  const { name, description, template, defaultModel } = body
-  log.info({ name, template, hasDescription: !!description }, 'creating new project')
-  if (!name?.trim()) {
-    log.warn({}, 'project creation failed - name required')
-    return c.json({ error: 'name is required' }, 400)
+  const body = await c.req.json<{ name?: string; description?: string; template?: string; defaultModel?: string }>()
+  const name = body.name?.trim()
+
+  if (!name) return c.json({ error: 'name is required' }, 400)
+
+  const createResult = await cli.createProject(name, {
+    description: body.description,
+    template: body.template,
+  })
+
+  if (!createResult.ok) {
+    return c.json({ error: createResult.error.message || 'Failed to create project' }, 500)
   }
 
-  const result = await cli.createProject(name.trim(), { description, template })
-  if (!result.ok) return c.json({ error: result.error }, 500)
-
   const db = getDB()
-  const keyHashCreate = (() => { const a = loadStoredAuth(); return a?.key ? hashKey(a.key) : null })()
-  db.prepare(`
-    INSERT OR REPLACE INTO projects (id, name, description, default_model, api_key_hash)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(result.data.id, name.trim(), description ?? null, defaultModel ?? 'claude-sonnet-4-6', keyHashCreate)
+  const currentHash = getCurrentAuthHash()
 
-  return c.json({ project: { ...result.data, defaultModel } }, 201)
+  db.prepare(`
+    INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      default_model = excluded.default_model,
+      api_key_hash = excluded.api_key_hash,
+      updated_at = datetime('now')
+  `).run(
+    createResult.data.id,
+    name,
+    body.description ?? null,
+    body.defaultModel ?? 'claude-sonnet-4-6',
+    currentHash,
+  )
+
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(createResult.data.id) as ProjectRow
+  return c.json({ project: toProjectResponse(row, createResult.data, currentHash) }, 201)
 })
 
 projectsRouter.get('/:id', async (c) => {
   const projectId = c.req.param('id')
   const db = getDB()
-  const local = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as any
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
 
-  if (!local) return c.json({ error: 'project not found' }, 404)
+  if (!row) return c.json({ error: 'project not found' }, 404)
 
-  // Enrich with CLI data if it exists on the API
-  const cliResult = await cli.listProjects()
-  const remote = cliResult.ok ? cliResult.data.find((p) => p.id === projectId) : null
-
-  return c.json({
-    project: {
-      id: local.id,
-      name: local.name,
-      description: local.description,
-      sandbox: remote?.sandbox || { status: 'stopped' },
-      defaultModel: local.default_model ?? 'claude-sonnet-4-6',
-      lastOpenedAt: local.last_opened_at ?? null,
-      differentKey: false,
-      created_at: local.created_at,
-      updated_at: local.updated_at,
-    },
-  })
+  const remoteProjects = await listRemoteProjectsSafe()
+  const project = toProjectResponse(row, remoteProjects.get(projectId), getCurrentAuthHash())
+  return c.json({ project })
 })
 
 projectsRouter.patch('/:id', async (c) => {
   const projectId = c.req.param('id')
-  const { defaultModel } = await c.req.json()
+  const { defaultModel } = await c.req.json<{ defaultModel?: string }>()
+
+  if (!defaultModel?.trim()) {
+    return c.json({ error: 'defaultModel is required' }, 400)
+  }
+
   const db = getDB()
   db.prepare(`
-    INSERT OR REPLACE INTO projects (id, default_model)
-    VALUES (?, ?)
-    ON CONFLICT(id) DO UPDATE SET default_model = excluded.default_model
-  `).run(projectId, defaultModel)
+    UPDATE projects
+    SET default_model = ?, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(defaultModel.trim(), projectId)
+
   return c.json({ ok: true })
 })
 
 projectsRouter.delete('/:id', async (c) => {
   const projectId = c.req.param('id')
-  
-  // Try to delete remotely, but don't fail if it doesn't exist (orphaned project)
-  const result = await cli.deleteProject(projectId)
-  if (!result.ok && !result.error.message?.includes('not found') && !result.error.message?.includes('Forbidden')) {
-    log.warn({ projectId, error: result.error }, 'remote delete failed, but continuing with local cleanup')
+  const remoteDelete = await cli.deleteProject(projectId)
+
+  if (!remoteDelete.ok) {
+    const message = remoteDelete.error.message?.toLowerCase() ?? ''
+    const ignorable = message.includes('not found') || message.includes('forbidden')
+    if (!ignorable) {
+      log.warn({ projectId, error: remoteDelete.error.message }, 'remote delete failed')
+    }
   }
 
-  // Always clean up local resources
   await sshManager.disconnect(projectId).catch(() => {})
+  fileWatcher.stop(projectId)
+  agentUrls.delete(projectId)
+
   const db = getDB()
   db.prepare('DELETE FROM projects WHERE id = ?').run(projectId)
   db.prepare('DELETE FROM sessions WHERE project_id = ?').run(projectId)
-  
-  log.info({ projectId }, 'project deleted (local cleanup complete)')
+
   return c.json({ ok: true })
 })
 
-// POST /projects/:id/workspace — acquire sandbox and open SSH
 projectsRouter.post('/:id/workspace', async (c) => {
   const projectId = c.req.param('id')
-  
-  // Reject null/invalid projectIds immediately
   if (!projectId || projectId === 'null' || projectId === 'undefined') {
-    log.warn({ projectId }, 'workspace open rejected - invalid projectId')
     return c.json({ error: 'Invalid project ID' }, 400)
   }
-  
-  log.info({ projectId }, 'opening workspace - acquiring sandbox')
 
-  // Only allow opening workspaces for locally-created projects
   const db = getDB()
-  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)
-  if (!existing) {
-    log.warn({ projectId }, 'workspace open rejected - project not in local database')
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
+  if (!row) {
     return c.json({ error: 'Project not found. Projects must be created through this studio.' }, 404)
   }
 
-  // Check if we already have an active connection
-  const existingConn = await sshManager.getConnection(projectId).catch(() => null)
-  if (existingConn && agentUrls.has(projectId)) {
-    log.info({ projectId }, 'workspace already open - reusing existing sandbox')
-    db.prepare(`UPDATE projects SET last_opened_at = datetime('now') WHERE id = ?`).run(projectId)
-    return c.json({ ok: true, agentUrl: agentUrls.get(projectId) })
+  const existingConnection = sshManager.isConnected(projectId)
+  const existingAgentUrl = agentUrls.get(projectId)
+  if (existingConnection && existingAgentUrl) {
+    db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
+    return c.json({ ok: true, agentUrl: existingAgentUrl })
   }
 
-  // mark last opened
-  db.prepare(`UPDATE projects SET last_opened_at = datetime('now') WHERE id = ?`).run(projectId)
-  log.debug({ projectId }, 'updated last opened timestamp')
+  db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
 
-  log.debug({ projectId }, 'calling CLI acquireSandbox')
-  const result = await cli.acquireSandbox(projectId)
-  if (!result.ok) {
-    log.error({ projectId, error: result.error }, 'failed to acquire sandbox')
-    
-    // Check for specific error types
-    if (result.error.code === 'CREDITS_EXHAUSTED') {
+  const acquire = await cli.acquireSandbox(projectId)
+  if (!acquire.ok) {
+    const message = acquire.error.message || 'Failed to acquire sandbox'
+
+    if (acquire.error.code === 'CREDITS_EXHAUSTED') {
       return c.json({ error: 'Insufficient credits. Add credits at vibecode.dev/payments' }, 402)
     }
-    
-    // Check if Forbidden — project may have been created with a different key
-    if (result.error.message?.includes('Forbidden') || result.error.stderr?.includes('Forbidden')) {
-      // Check if this project exists under the current API key
-      const remoteList = await cli.listProjects()
-      const existsRemotely = remoteList.ok && remoteList.data.some((p: any) => p.id === projectId)
+
+    if (message.toLowerCase().includes('forbidden')) {
+      const remote = await cli.listProjects()
+      const existsRemotely = remote.ok && remote.data.some((project: any) => project.id === projectId)
       if (!existsRemotely) {
-        // Project belongs to a different key — trigger continuation flow on the client
-        const dbRow = db.prepare('SELECT snapshot_at FROM projects WHERE id = ?').get(projectId) as any
-        log.info({ projectId }, 'project not found under current key — activating continuation flow')
-        return c.json({ ok: false, differentKey: true, snapshotAt: dbRow?.snapshot_at ?? null })
+        return c.json({ ok: false, differentKey: true, snapshotAt: row.snapshot_at ?? null })
       }
-      return c.json({ 
-        error: 'API key is invalid or account is restricted. Please update your API key in Settings.',
-        code: 'FORBIDDEN'
-      }, 403)
+
+      return c.json(
+        {
+          error: 'API key is invalid or account is restricted. Please update your API key in Settings.',
+          code: 'FORBIDDEN',
+        },
+        403,
+      )
     }
-    
-    return c.json({ error: result.error.message || 'Failed to acquire sandbox' }, 500)
+
+    return c.json({ error: message }, 500)
   }
 
-  const { sandbox: creds, links } = result.data
-  log.info({ projectId, sandboxId: creds.id, host: creds.ipv4, port: creds.sshPort, agentUrl: links?.agentUrl?.url }, 'sandbox acquired successfully')
-  log.trace({ projectId, credentials: creds, links }, 'full sandbox response')
-  
-  log.debug({ projectId }, 'establishing SSH connection')
+  const sandbox = acquire.data.sandbox
+  const links = acquire.data.links
+
+  sshManager.primeCredentials(projectId, sandbox)
+
   try {
     await sshManager.getConnection(projectId)
-    log.info({ projectId }, 'SSH connection established')
   } catch (err) {
-    log.error({ projectId, err }, 'SSH connection failed')
     return c.json({ error: `SSH connect failed: ${err instanceof Error ? err.message : String(err)}` }, 500)
   }
 
-  // Restore workspace files from latest backup if available
+  if (links?.agentUrl?.url) {
+    agentUrls.set(projectId, links.agentUrl.url)
+  }
+
+  const currentHash = getCurrentAuthHash()
+  if (currentHash) {
+    db.prepare(`UPDATE projects SET api_key_hash = ?, updated_at = datetime('now') WHERE id = ?`).run(currentHash, projectId)
+  }
+
   try {
-    const latestBackup = backupCoordinator.getLatestBackup(projectId)
-    if (latestBackup) {
-      log.info({ projectId, backupId: latestBackup.id, backupPath: latestBackup.file_path }, 'restoring workspace from backup')
-      const sftp = await sshManager.getSFTP(projectId)
-
-      // Upload backup tarball to sandbox
-      const remotePath = `/tmp/workspace_restore.tar.gz`
-      await new Promise<void>((resolve, reject) => {
-        sftp.fastPut(latestBackup.file_path, remotePath, {}, (err) => {
-          if (err) reject(err)
-          else resolve()
-        })
-      })
-      log.debug({ projectId }, 'backup uploaded to sandbox')
-
-      // Extract in sandbox home directory
-      await sshManager.exec(projectId, `mkdir -p /home/user && cd /home/user && tar xzf ${remotePath} --strip-components=1 2>/dev/null || tar xzf ${remotePath} 2>/dev/null || true`)
-      await sshManager.exec(projectId, `rm -f ${remotePath}`)
-      log.info({ projectId }, 'workspace files restored from backup')
-    }
+    await backupCoordinator.restoreLatest(projectId)
   } catch (err) {
-    log.warn({ projectId, err }, 'failed to restore workspace from backup (non-fatal)')
+    log.warn({ projectId, error: String(err) }, 'failed to restore latest backup')
   }
 
-  log.info({ projectId }, 'workspace opened successfully')
-  if (links?.agentUrl?.url) agentUrls.set(projectId, links.agentUrl.url)
-
-  // Track which key opened this project (for continuation detection)
-  const authNow = loadStoredAuth()
-  if (authNow?.key) {
-    db.prepare("UPDATE projects SET api_key_hash = ? WHERE id = ?").run(hashKey(authNow.key), projectId)
-  }
-
-  return c.json({ 
-    ok: true, 
-    sandbox: { host: creds.ipv4, port: creds.sshPort, user: creds.sshUsername },
+  return c.json({
+    ok: true,
+    sandbox: {
+      host: sandbox?.ipv4,
+      port: sandbox?.sshPort,
+      user: sandbox?.sshUsername,
+    },
     agentUrl: links?.agentUrl?.url,
-    links
+    links,
   })
 })
 
-// DELETE /projects/:id/workspace — disconnect
 projectsRouter.delete('/:id/workspace', async (c) => {
   const projectId = c.req.param('id')
   await sshManager.disconnect(projectId).catch(() => {})
+  fileWatcher.stop(projectId)
+  agentUrls.delete(projectId)
   return c.json({ ok: true })
 })

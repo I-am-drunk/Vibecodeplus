@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { addClientLog } from '../lib/serverLogs'
 
 export interface Message {
   id: string
@@ -15,7 +14,7 @@ export interface Message {
 export interface ToolCall {
   id: string
   name: string
-  input: any
+  input: unknown
   result?: string
   status: 'running' | 'success' | 'error'
   messageId?: string
@@ -47,8 +46,8 @@ interface ChatState {
   addMessage: (msg: Message) => void
   appendStreamText: (text: string) => void
   finalizeStream: (content: string, cutOff?: boolean) => void
-  setStreaming: (v: boolean) => void
-  setCreditsExhausted: (v: boolean) => void
+  setStreaming: (value: boolean) => void
+  setCreditsExhausted: (value: boolean) => void
   setModel: (model: string) => void
   addToolCall: (toolCall: ToolCall) => void
   updateToolCall: (id: string, updates: Partial<ToolCall>) => void
@@ -66,107 +65,92 @@ export const useChatStore = create<ChatState>((set) => ({
   model: 'claude-sonnet-4-6',
   toolCalls: [],
 
-  setSessions: (sessions) => {
-    addClientLog('chatStore', 'setSessions called', { count: sessions.length })
-    set({ sessions })
-    addClientLog('chatStore', 'setSessions state updated')
-  },
+  setSessions: (sessions) => set({ sessions }),
+
   setActiveSession: (id) => {
-    const prev = useChatStore.getState().activeSessionId
-    addClientLog('chatStore', 'setActiveSession called', { id, previousId: prev })
     set({ activeSessionId: id })
     if (id) {
       localStorage.setItem('activeSessionId', id)
     } else {
       localStorage.removeItem('activeSessionId')
     }
-    addClientLog('chatStore', 'setActiveSession state updated', { newId: id })
   },
-  setMessages: (messages) => {
-    const prevCount = useChatStore.getState().messages.length
-    addClientLog('chatStore', 'setMessages called', { count: messages.length, previousCount: prevCount })
-    set({ messages })
-    addClientLog('chatStore', 'setMessages state updated')
-  },
-  addMessage: (msg) => {
-    const prevCount = useChatStore.getState().messages.length
-    addClientLog('chatStore', 'addMessage called', { msgId: msg.id, role: msg.role, previousCount: prevCount })
-    set(s => {
-      const newMessages = [...s.messages, msg]
-      addClientLog('chatStore', 'addMessage new count', { count: newMessages.length })
-      return { messages: newMessages }
-    })
-    addClientLog('chatStore', 'addMessage state updated')
-  },
-  appendStreamText: (text) => {
-    addClientLog('chatStore', 'appendStreamText', { textLength: text.length })
-    set(s => {
-      const newText = s.streamingText + text
-      addClientLog('chatStore', 'appendStreamText new length', { length: newText.length })
-      return { streamingText: newText }
-    })
-  },
-  finalizeStream: (content, cutOff) => {
-    const prevCount = useChatStore.getState().messages.length
-    addClientLog('chatStore', 'finalizeStream called', { contentLength: content.length, previousMessageCount: prevCount, cutOff })
-    
-    const msgId = crypto.randomUUID()
-    const createdAt = new Date().toISOString()
-    addClientLog('chatStore', 'finalizeStream creating assistant message', { msgId, createdAt })
-    set(s => ({
-      streamingText: '',
-      isStreaming: false,
-      messages: [...s.messages, {
-        id: msgId,
+
+  setMessages: (messages) => set({ messages }),
+
+  addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
+
+  appendStreamText: (text) => set((state) => ({ streamingText: state.streamingText + text })),
+
+  finalizeStream: (content, cutOff) =>
+    set((state) => {
+      const hasContent = Boolean(content)
+      const hasUnassignedToolCalls = state.toolCalls.some((toolCall) => !toolCall.messageId)
+
+      if (!hasContent && !hasUnassignedToolCalls && !cutOff) {
+        return {
+          isStreaming: false,
+          streamingText: '',
+        }
+      }
+
+      const messageId = crypto.randomUUID()
+      const assistantMessage: Message = {
+        id: messageId,
         role: 'assistant',
         content: content || '',
-        createdAt,
+        createdAt: new Date().toISOString(),
         cutOff: cutOff ?? false,
-      }],
-      // Assign messageId to all tool calls without one
-      toolCalls: s.toolCalls.map(tc => tc.messageId ? tc : { ...tc, messageId: msgId }),
-    }))
-    const newCount = useChatStore.getState().messages.length
-    addClientLog('chatStore', 'finalizeStream state updated', { newMessageCount: newCount })
-  },
-  setStreaming: (v) => {
-    const prev = useChatStore.getState().isStreaming
-    addClientLog('chatStore', 'setStreaming called', { value: v, previousValue: prev })
-    set({ isStreaming: v })
-    addClientLog('chatStore', 'setStreaming state updated')
-  },
-  setCreditsExhausted: (v) => {
-    addClientLog('chatStore', 'setCreditsExhausted called', { value: v })
-    set({ creditsExhausted: v })
-  },
-  setModel: (model) => {
-    const prev = useChatStore.getState().model
-    addClientLog('chatStore', 'setModel called', { model, previousModel: prev })
-    set({ model })
-    addClientLog('chatStore', 'setModel state updated')
-  },
-  addToolCall: (toolCall) => {
-    set(s => ({ toolCalls: [...s.toolCalls, toolCall] }))
-  },
-  updateToolCall: (id, updates) => {
-    set(s => ({
-      toolCalls: s.toolCalls.map(tc => tc.id === id ? { ...tc, ...updates } : tc)
-    }))
-  },
-  clearToolCalls: () => {
-    set({ toolCalls: [] })
-  },
-  reset: () => {
-    const prev = useChatStore.getState()
-    addClientLog('chatStore', 'reset called - clearing all state', {
-      prevSessions: prev.sessions.length,
-      prevActiveSessionId: prev.activeSessionId,
-      prevMessages: prev.messages.length,
-      prevStreamingText: prev.streamingText.length,
-      prevIsStreaming: prev.isStreaming,
-    })
-    set({ sessions: [], activeSessionId: null, messages: [], streamingText: '', isStreaming: false, toolCalls: [] })
-    addClientLog('chatStore', 'reset state cleared')
-  },
-}))
+      }
 
+      return {
+        streamingText: '',
+        isStreaming: false,
+        messages: [...state.messages, assistantMessage],
+        toolCalls: state.toolCalls.map((toolCall) =>
+          toolCall.messageId ? toolCall : { ...toolCall, messageId },
+        ),
+      }
+    }),
+
+  setStreaming: (value) =>
+    set((state) => ({
+      isStreaming: value,
+      streamingText: value ? state.streamingText : '',
+    })),
+
+  setCreditsExhausted: (value) => set({ creditsExhausted: value }),
+
+  setModel: (model) => set({ model }),
+
+  addToolCall: (toolCall) =>
+    set((state) => {
+      const exists = state.toolCalls.some((call) => call.id === toolCall.id)
+      if (exists) {
+        return {
+          toolCalls: state.toolCalls.map((call) => (call.id === toolCall.id ? { ...call, ...toolCall } : call)),
+        }
+      }
+      return { toolCalls: [...state.toolCalls, toolCall] }
+    }),
+
+  updateToolCall: (id, updates) =>
+    set((state) => ({
+      toolCalls: state.toolCalls.map((toolCall) =>
+        toolCall.id === id ? { ...toolCall, ...updates } : toolCall,
+      ),
+    })),
+
+  clearToolCalls: () => set({ toolCalls: [] }),
+
+  reset: () =>
+    set({
+      sessions: [],
+      activeSessionId: null,
+      messages: [],
+      streamingText: '',
+      isStreaming: false,
+      toolCalls: [],
+      creditsExhausted: false,
+    }),
+}))

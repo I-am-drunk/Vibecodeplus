@@ -2,9 +2,41 @@ import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { which } from '../process/registry.ts'
 import type {
-  CLIResult, CLIError, VibecodeUser, VibecodeProject,
-  SandboxCredentials, AgentStreamEvent,
+  CLIResult,
+  CLIError,
+  VibecodeUser,
+  VibecodeProject,
+  AgentStreamEvent,
 } from './types.ts'
+import { createLogger } from '../lib/logger.ts'
+
+const log = createLogger('cli')
+
+function parseFirstJson(text: string): any | null {
+  const trimmed = text.trim()
+  if (!trimmed) return null
+
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    // fall through
+  }
+
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  for (const line of lines.reverse()) {
+    try {
+      return JSON.parse(line)
+    } catch {
+      // continue
+    }
+  }
+
+  return null
+}
 
 export class VibecodeCliWrapper {
   private binaryPath: string | null = null
@@ -20,18 +52,27 @@ export class VibecodeCliWrapper {
       `${process.env.HOME}/.bun/bin/vibecode-cli`,
     ].filter(Boolean) as string[]
 
-    for (const p of candidates) {
-      if (existsSync(p)) {
-        this.binaryPath = p
-        return p
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        this.binaryPath = candidate
+        return candidate
       }
     }
+
     return null
   }
 
-  getBinaryPath() { return this.binaryPath }
-  setApiKey(key: string) { this.apiKey = key }
-  getApiKey() { return this.apiKey }
+  getBinaryPath() {
+    return this.binaryPath
+  }
+
+  setApiKey(key: string) {
+    this.apiKey = key
+  }
+
+  getApiKey() {
+    return this.apiKey
+  }
 
   private getEnv(): NodeJS.ProcessEnv {
     return {
@@ -41,42 +82,74 @@ export class VibecodeCliWrapper {
   }
 
   private async runJSON<T>(args: string[], opts?: { timeout?: number; signal?: AbortSignal }): Promise<CLIResult<T>> {
-    if (!this.binaryPath) return { ok: false, error: { code: 'NOT_FOUND', message: 'vibecode-cli not found' } }
+    if (!this.binaryPath) {
+      return { ok: false, error: { code: 'NOT_FOUND', message: 'vibecode-cli not found' } }
+    }
 
-    const timeout = opts?.timeout ?? 30_000
-    return new Promise((resolve) => {
-      const proc = spawn(this.binaryPath!, [...args, '--output', 'json'], {
+    const timeoutMs = opts?.timeout ?? 30_000
+    const finalArgs = args.includes('--output') ? [...args] : [...args, '--output', 'json']
+
+    return await new Promise((resolve) => {
+      const proc = spawn(this.binaryPath!, finalArgs, {
         env: this.getEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
       let stdout = ''
       let stderr = ''
-      const timer = setTimeout(() => { proc.kill('SIGTERM') }, timeout)
 
-      if (opts?.signal) {
-        opts.signal.addEventListener('abort', () => proc.kill('SIGTERM'))
-      }
+      const onAbort = () => proc.kill('SIGTERM')
+      opts?.signal?.addEventListener('abort', onAbort)
 
-      proc.stdout.on('data', (d: Buffer) => { stdout += d.toString() })
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+      const timer = setTimeout(() => {
+        proc.kill('SIGTERM')
+      }, timeoutMs)
+
+      proc.stdout.on('data', (chunk: Buffer) => {
+        stdout += chunk.toString()
+      })
+
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
 
       proc.on('close', (code) => {
         clearTimeout(timer)
+        opts?.signal?.removeEventListener('abort', onAbort)
+
         if (code !== 0) {
           resolve({ ok: false, error: this.parseError(code ?? 1, stdout, stderr) })
           return
         }
-        try {
-          resolve({ ok: true, data: JSON.parse(stdout) as T })
-        } catch {
-          resolve({ ok: false, error: { code: 'PARSE_ERROR', message: 'Failed to parse CLI output', stderr } })
+
+        const parsed = parseFirstJson(stdout)
+        if (!parsed) {
+          resolve({
+            ok: false,
+            error: {
+              code: 'PARSE_ERROR',
+              message: 'Failed to parse CLI output',
+              stderr,
+              exitCode: code ?? 0,
+            },
+          })
+          return
         }
+
+        resolve({ ok: true, data: parsed as T })
       })
 
       proc.on('error', (err) => {
         clearTimeout(timer)
-        resolve({ ok: false, error: { code: 'UNKNOWN', message: err.message } })
+        opts?.signal?.removeEventListener('abort', onAbort)
+
+        resolve({
+          ok: false,
+          error: {
+            code: 'UNKNOWN',
+            message: err.message,
+          },
+        })
       })
     })
   }
@@ -84,54 +157,52 @@ export class VibecodeCliWrapper {
   async *runStream(args: string[], opts?: { signal?: AbortSignal }): AsyncGenerator<AgentStreamEvent> {
     if (!this.binaryPath) throw new Error('vibecode-cli not found')
 
-    console.log('[cli] Running stream command:', this.binaryPath, args.join(' '))
-
     const proc = spawn(this.binaryPath, args, {
       env: this.getEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    if (opts?.signal) {
-      opts.signal.addEventListener('abort', () => proc.kill('SIGTERM'))
-    }
+    let stderrBuffer = ''
+    let stdoutBuffer = ''
 
-    // Capture stderr for diagnostics
-    let stderrBuf = ''
-    proc.stderr.on('data', (d: Buffer) => { stderrBuf += d.toString() })
+    const onAbort = () => proc.kill('SIGTERM')
+    opts?.signal?.addEventListener('abort', onAbort)
 
-    let buffer = ''
-    const stream = proc.stdout
-    let eventCount = 0
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderrBuffer += chunk.toString()
+    })
 
-    for await (const chunk of stream) {
-      buffer += chunk.toString()
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
+    for await (const chunk of proc.stdout) {
+      stdoutBuffer += chunk.toString()
+      const lines = stdoutBuffer.split('\n')
+      stdoutBuffer = lines.pop() ?? ''
 
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
+      for (const raw of lines) {
+        const line = raw.trim()
+        if (!line) continue
+
+        const payload = line.startsWith('data:') ? line.slice(5).trim() : line
+        if (!payload || payload === '[DONE]') continue
+
         try {
-          const parsed = JSON.parse(trimmed)
-          const event = parsed.message || parsed
-          eventCount++
-          console.log('[cli] Stream event:', event.type)
-          yield event as AgentStreamEvent
+          const parsed = JSON.parse(payload)
+          const event = parsed.message ?? parsed
+          if (event?.type) {
+            yield event as AgentStreamEvent
+          }
         } catch {
-          console.log('[cli] Non-JSON line:', trimmed.slice(0, 120))
+          // ignore non-json line
         }
       }
     }
 
-    if (buffer.trim()) {
+    if (stdoutBuffer.trim()) {
       try {
-        const parsed = JSON.parse(buffer.trim())
-        const event = parsed.message || parsed
-        eventCount++
-        console.log('[cli] Stream event (final):', event.type)
-        yield event as AgentStreamEvent
+        const parsed = JSON.parse(stdoutBuffer.trim())
+        const event = parsed.message ?? parsed
+        if (event?.type) yield event as AgentStreamEvent
       } catch {
-        console.log('[cli] Non-JSON final buffer:', buffer.trim().slice(0, 120))
+        // ignore trailing non-json
       }
     }
 
@@ -139,59 +210,80 @@ export class VibecodeCliWrapper {
       proc.on('exit', (code) => resolve(code ?? 0))
     })
 
-    if (stderrBuf.trim()) console.error('[cli] stderr:', stderrBuf.trim())
-    console.log('[cli] Stream completed, total events:', eventCount, 'exitCode:', exitCode)
-    
+    opts?.signal?.removeEventListener('abort', onAbort)
+
     if (exitCode !== 0) {
-      const errMsg = stderrBuf.trim() || `CLI exited with code ${exitCode}`
-      console.error('[cli] Stream failed:', errMsg)
-      throw new Error(errMsg)
+      throw new Error(stderrBuffer.trim() || `CLI exited with code ${exitCode}`)
+    }
+
+    if (stderrBuffer.trim()) {
+      log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
     }
   }
 
   async getUser(): Promise<CLIResult<VibecodeUser>> {
     const result = await this.runJSON<any>(['user'])
     if (!result.ok) return result
-    // CLI returns creditBalance, but we need credits.balance
+
+    const balanceCents = Number(result.data.creditBalance ?? result.data.credits?.balance ?? 0)
+
     return {
       ok: true,
       data: {
-        id: result.data.id,
-        email: result.data.email,
-        name: `${result.data.firstName || ''} ${result.data.lastName || ''}`.trim() || result.data.email,
-        plan: result.data.planTier || 'free',
+        id: String(result.data.id),
+        email: String(result.data.email),
+        name:
+          `${result.data.firstName || ''} ${result.data.lastName || ''}`.trim() ||
+          String(result.data.email || ''),
+        plan: (result.data.planTier || 'free') as VibecodeUser['plan'],
         credits: {
-          balance: (result.data.creditBalance || 0) / 100, // Convert cents to dollars
-          used: 0,
-          limit: null,
-        }
-      }
+          balance: balanceCents > 1000 ? balanceCents / 100 : balanceCents,
+          used: Number(result.data.credits?.used ?? 0),
+          limit: result.data.credits?.limit ?? null,
+        },
+      },
     }
   }
 
   async listProjects(): Promise<CLIResult<VibecodeProject[]>> {
-    const result = await this.runJSON<{ projects: VibecodeProject[] }>(['projects', 'list'])
+    const result = await this.runJSON<any>(['projects', 'list'])
     if (!result.ok) return result
-    return { ok: true, data: result.data?.projects || [] }
+
+    const projects = Array.isArray(result.data) ? result.data : result.data?.projects
+    return { ok: true, data: (projects ?? []) as VibecodeProject[] }
   }
 
-  async createProject(name: string, opts?: { description?: string; template?: string }): Promise<CLIResult<VibecodeProject>> {
+  async createProject(
+    name: string,
+    opts?: { description?: string; template?: string },
+  ): Promise<CLIResult<VibecodeProject>> {
     const platform = opts?.template || 'webapp'
     const description = opts?.description || name
-    const args = ['projects', 'create', platform, description]
-    const result = await this.runJSON<any>(args)
+
+    const result = await this.runJSON<any>(['projects', 'create', platform, description])
     if (!result.ok) return result
-    // CLI returns {projectId, platform, ...} but we need {id, name, ...}
+
+    const id = result.data.projectId ?? result.data.id
+    if (!id) {
+      return {
+        ok: false,
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Project create response did not include an id',
+        },
+      }
+    }
+
     return {
       ok: true,
       data: {
-        id: result.data.projectId,
-        name: description,
-        description: description,
-        type: result.data.projectType || 'agent',
-        platform: result.data.platform,
-        status: 'stopped',
-      } as VibecodeProject
+        id: String(id),
+        name,
+        description,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        sandbox: { status: 'stopped' },
+      },
     }
   }
 
@@ -200,46 +292,103 @@ export class VibecodeCliWrapper {
   }
 
   async acquireSandbox(projectId: string): Promise<CLIResult<any>> {
-    const result = await this.runJSON<any>(['sandboxes', 'acquire', projectId])
-    if (!result.ok) return result
-    // Return full response including sandbox and links (agentUrl, webappUrl, etc)
-    return { ok: true, data: result.data }
+    return this.runJSON<any>(['sandboxes', 'acquire', projectId])
   }
 
   async exportSandbox(projectId: string, outputPath: string): Promise<CLIResult<{ path: string }>> {
-    if (!this.binaryPath) return { ok: false, error: { code: 'NOT_FOUND', message: 'vibecode-cli not found' } }
-    return new Promise((resolve) => {
+    if (!this.binaryPath) {
+      return { ok: false, error: { code: 'NOT_FOUND', message: 'vibecode-cli not found' } }
+    }
+
+    return await new Promise((resolve) => {
       const proc = spawn(this.binaryPath!, ['sandboxes', 'export', projectId, '--output', outputPath], {
         env: this.getEnv(),
         stdio: ['ignore', 'pipe', 'pipe'],
       })
+
       let stderr = ''
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+      proc.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+
       proc.on('close', (code) => {
-        if (code !== 0) resolve({ ok: false, error: { code: 'PROCESS_ERROR', message: stderr, exitCode: code ?? 1 } })
-        else resolve({ ok: true, data: { path: outputPath } })
+        if (code !== 0) {
+          resolve({
+            ok: false,
+            error: {
+              code: 'PROCESS_ERROR',
+              message: stderr || `Failed to export sandbox (${code})`,
+              exitCode: code ?? 1,
+            },
+          })
+          return
+        }
+
+        resolve({ ok: true, data: { path: outputPath } })
       })
     })
   }
 
   agentSend(agentUrl: string, model: string, prompt: string, opts?: { signal?: AbortSignal }) {
-    const args = ['agent', 'send', '--model', model, '--output', 'json', agentUrl, prompt]
-    return this.runStream(args, { signal: opts?.signal })
+    return this.runStream(['agent', 'send', '--model', model, '--output', 'json', agentUrl, prompt], {
+      signal: opts?.signal,
+    })
   }
 
   async agentStop(agentUrl: string): Promise<CLIResult<{ stopped: boolean }>> {
-    return this.runJSON(['agent', 'stop', '--output', 'json', agentUrl])
+    return this.runJSON(['agent', 'stop', agentUrl])
   }
 
   private parseError(exitCode: number, stdout: string, stderr: string): CLIError {
-    const combined = (stdout + stderr).toLowerCase()
-    if (combined.includes('unauthorized') || combined.includes('invalid key') || combined.includes('authentication'))
-      return { code: 'AUTH_FAILED', message: 'API key is invalid or expired', stderr, exitCode }
-    if (combined.includes('credits') && combined.includes('exhaust'))
-      return { code: 'CREDITS_EXHAUSTED', message: 'No credits remaining', stderr, exitCode }
-    if (combined.includes('network') || combined.includes('econnrefused') || combined.includes('timeout'))
-      return { code: 'NETWORK_ERROR', message: 'Cannot reach Vibecode servers', stderr, exitCode }
-    return { code: 'PROCESS_ERROR', message: stderr || stdout || `Process exited with code ${exitCode}`, stderr, exitCode }
+    const combined = `${stdout}\n${stderr}`.toLowerCase()
+
+    if (combined.includes('unauthorized') || combined.includes('invalid key') || combined.includes('authentication')) {
+      return {
+        code: 'AUTH_FAILED',
+        message: 'API key is invalid or expired',
+        stderr,
+        exitCode,
+      }
+    }
+
+    if (combined.includes('forbidden')) {
+      return {
+        code: 'AUTH_FAILED',
+        message: 'API key is invalid or account is restricted',
+        stderr,
+        exitCode,
+      }
+    }
+
+    if (combined.includes('credits') && combined.includes('exhaust')) {
+      return {
+        code: 'CREDITS_EXHAUSTED',
+        message: 'No credits remaining',
+        stderr,
+        exitCode,
+      }
+    }
+
+    if (
+      combined.includes('network') ||
+      combined.includes('econnrefused') ||
+      combined.includes('timeout') ||
+      combined.includes('dns')
+    ) {
+      return {
+        code: 'NETWORK_ERROR',
+        message: 'Cannot reach Vibecode servers',
+        stderr,
+        exitCode,
+      }
+    }
+
+    return {
+      code: 'PROCESS_ERROR',
+      message: stderr || stdout || `Process exited with code ${exitCode}`,
+      stderr,
+      exitCode,
+    }
   }
 }
 
