@@ -97,15 +97,29 @@ export class ContinuationOrchestrator {
   }
 
   private async cleanupOrphanedMigrations(sourceProjectId: string, excludeMigrationId: string) {
-    const { getDB } = require('../state/db.ts');
-    const db = getDB();
-    const rows = db.prepare(`SELECT id, target_project_id FROM project_migrations WHERE source_project_id = ? AND id != ? AND target_project_id IS NOT NULL AND status IN ('failed', 'partial_failed')`).all(sourceProjectId, excludeMigrationId) as Array<{ id: string, target_project_id: string }>;
+    const db = getDB()
+    const rows = db
+      .prepare(
+        `SELECT id, target_project_id FROM project_migrations
+          WHERE source_project_id = ?
+            AND id != ?
+            AND target_project_id IS NOT NULL
+            AND status IN ('failed', 'partial_failed')`,
+      )
+      .all(sourceProjectId, excludeMigrationId) as Array<{ id: string; target_project_id: string }>
+
     for (const row of rows) {
       try {
-        await this.deps.cli.deleteProject(row.target_project_id);
-        log.info({ sourceProjectId, targetProjectId: row.target_project_id }, 'cleaned up orphaned target project');
+        await this.deps.cli.deleteProject(row.target_project_id)
+        log.info(
+          { sourceProjectId, targetProjectId: row.target_project_id },
+          'cleaned up orphaned target project',
+        )
       } catch (error) {
-        log.error({ targetProjectId: row.target_project_id, error: String(error) }, 'failed to clean up orphaned target project');
+        log.error(
+          { targetProjectId: row.target_project_id, error: String(error) },
+          'failed to clean up orphaned target project',
+        )
       }
     }
   }
