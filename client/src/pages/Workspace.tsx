@@ -585,6 +585,7 @@ export function WorkspacePage() {
         onClose={() => setShowKeyRecovery(false)}
         onRecovered={handleKeyRecovered}
         projectId={projectId}
+        projectName={project?.name}
         reason={keyRecoveryReason}
       />
       <ContinuationDialog
