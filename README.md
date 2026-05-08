@@ -161,6 +161,14 @@ Supported environment overrides:
 
 ---
 
+## Program planning docs
+
+- [Master tranche execution plan](docs/tranche-execution-plan.md)
+- [Release gates + 200-case validation matrix](docs/release-gates.md)
+- [Rollback runbook](docs/rollback-runbook.md)
+
+---
+
 ## Changelog
 
 ### v0.1.0 (2026-05-08)
