@@ -7,16 +7,20 @@ const log = createLogger('settings')
 export const settingsRouter = new Hono()
 
 settingsRouter.get('/', (c) => {
-  const settings = getConfig()
-  log.debug({ settings }, 'settings retrieved')
-  return c.json({ settings })
+  return c.json({ settings: getConfig() })
 })
 
-settingsRouter.put('/', async (c) => {
-  const body = await c.req.json()
-  log.info({ updates: Object.keys(body) }, 'updating settings')
+async function updateSettings(c: any) {
+  const body = await c.req.json<Record<string, unknown>>()
+  log.info({ keys: Object.keys(body) }, 'updating settings')
+
   const result = updateConfig(body)
-  const settings = getConfig()
-  log.info({ result, settings }, 'settings updated')
-  return c.json({ ok: true, settings, ...result })
-})
+  return c.json({
+    ok: true,
+    settings: getConfig(),
+    ...result,
+  })
+}
+
+settingsRouter.patch('/', updateSettings)
+settingsRouter.put('/', updateSettings)

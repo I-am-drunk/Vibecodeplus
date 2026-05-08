@@ -11,167 +11,276 @@ const log = createLogger('chat')
 
 export const chatRouter = new Hono()
 
-// POST /chat — send a message, stream events via WebSocket
+type ChatRequest = {
+  projectId?: string
+  model?: string
+  prompt?: string
+  sessionId?: string
+  agentUrl?: string
+}
+
+function extractTextChunk(event: any): string {
+  if (typeof event?.text === 'string') return event.text
+  if (typeof event?.delta === 'string') return event.delta
+  if (typeof event?.content === 'string' && event.type === 'text') return event.content
+  if (typeof event?.text?.delta === 'string') return event.text.delta
+  return ''
+}
+
+function normalizeToolUse(event: any) {
+  if (event?.type !== 'tool_use') return null
+  const payload = event.tool_use ?? event
+  if (!payload?.id || !payload?.name) return null
+  return {
+    id: String(payload.id),
+    name: String(payload.name),
+    input: payload.input ?? {},
+  }
+}
+
+function normalizeToolResult(event: any) {
+  if (event?.type !== 'tool_result') return null
+  const payload = event.tool_result ?? event
+  if (!payload?.tool_use_id) return null
+
+  return {
+    tool_use_id: String(payload.tool_use_id),
+    content:
+      typeof payload.content === 'string'
+        ? payload.content
+        : JSON.stringify(payload.content ?? ''),
+    is_error: !!payload.is_error,
+  }
+}
+
+function ensureSession(projectId: string, model: string, prompt: string, requestedSessionId?: string) {
+  const db = getDB()
+
+  if (!requestedSessionId) {
+    const sessionId = crypto.randomUUID()
+    const title = prompt.slice(0, 80)
+
+    db.prepare(`
+      INSERT INTO sessions (id, project_id, model, title, message_count, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+    `).run(sessionId, projectId, model, title)
+
+    return sessionId
+  }
+
+  const sessionRow = db.prepare('SELECT id, project_id FROM sessions WHERE id = ?').get(requestedSessionId) as
+    | { id: string; project_id: string }
+    | undefined
+
+  if (!sessionRow) {
+    throw new Error('Session not found')
+  }
+
+  if (sessionRow.project_id !== projectId) {
+    throw new Error('Session does not belong to this project')
+  }
+
+  db.prepare(`UPDATE sessions SET updated_at = datetime('now') WHERE id = ?`).run(requestedSessionId)
+  return requestedSessionId
+}
+
+function saveUserMessage(sessionId: string, prompt: string) {
+  const db = getDB()
+  db.prepare(`
+    INSERT INTO messages (id, session_id, role, content, status, created_at)
+    VALUES (?, ?, 'user', ?, 'complete', datetime('now'))
+  `).run(crypto.randomUUID(), sessionId, prompt)
+
+  db.prepare(`
+    UPDATE sessions
+    SET message_count = message_count + 1, updated_at = datetime('now')
+    WHERE id = ?
+  `).run(sessionId)
+}
+
+function saveAssistantMessage(
+  sessionId: string,
+  content: string,
+  opts: { status: 'complete' | 'cut_off' | 'error' | 'empty'; inputTokens: number; outputTokens: number; toolCalls?: any[] },
+) {
+  const db = getDB()
+
+  db.prepare(`
+    INSERT INTO messages (id, session_id, role, content, input_tokens, output_tokens, tool_calls, status, created_at)
+    VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, datetime('now'))
+  `).run(
+    crypto.randomUUID(),
+    sessionId,
+    content,
+    opts.inputTokens,
+    opts.outputTokens,
+    opts.toolCalls?.length ? JSON.stringify(opts.toolCalls) : null,
+    opts.status,
+  )
+
+  db.prepare(`
+    UPDATE sessions
+    SET
+      message_count = message_count + 1,
+      total_input_tokens = total_input_tokens + ?,
+      total_output_tokens = total_output_tokens + ?,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(opts.inputTokens, opts.outputTokens, sessionId)
+}
+
 chatRouter.post('/', async (c) => {
-  const { projectId, model, prompt, sessionId, agentUrl } = await c.req.json<{
-    projectId: string
-    model: string
-    prompt: string
-    sessionId?: string
-    agentUrl?: string
-  }>()
+  const body = await c.req.json<ChatRequest>()
 
-  log.info({ projectId, model, sessionId, promptLength: prompt?.length, agentUrl }, 'chat request received')
+  const projectId = body.projectId?.trim()
+  const prompt = body.prompt?.trim()
+  const model = body.model?.trim() || 'claude-sonnet-4-6'
 
-  if (!projectId || !prompt?.trim()) {
-    log.warn({ projectId, hasPrompt: !!prompt }, 'validation failed - missing fields')
+  if (!projectId || !prompt) {
     return c.json({ error: 'projectId and prompt are required' }, 400)
   }
 
-  // Always use server-side agentUrl (fresh from last openWorkspace), fall back to client-provided
-  const serverAgentUrl = agentUrls.get(projectId)
-  const resolvedAgentUrl = serverAgentUrl ?? agentUrl
+  const resolvedAgentUrl = agentUrls.get(projectId) ?? body.agentUrl
   if (!resolvedAgentUrl) {
-    log.warn({ projectId }, 'no agentUrl available')
     return c.json({ error: 'agentUrl not available — open workspace first' }, 400)
   }
-  log.info({ projectId, serverAgentUrl, clientAgentUrl: agentUrl, resolved: resolvedAgentUrl, usingServer: !!serverAgentUrl }, 'resolved agentUrl')
 
-  const db = getDB()
-  log.debug({ projectId, sessionId }, 'processing chat request')
-
-  // Resolve or create session
-  let activeSessionId = sessionId
-  if (!activeSessionId) {
-    activeSessionId = crypto.randomUUID()
-    log.info({ projectId, sessionId: activeSessionId, title: prompt.slice(0, 60) }, 'creating new session')
-    try {
-      db.prepare(`
-        INSERT INTO sessions (id, project_id, model, title, created_at, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(activeSessionId, projectId, model, prompt.slice(0, 60))
-      log.debug({ sessionId: activeSessionId }, 'session created in DB')
-    } catch (err) {
-      log.error({ sessionId: activeSessionId, error: err }, 'failed to create session')
-      throw err
-    }
-  } else {
-    log.debug({ sessionId: activeSessionId }, 'using existing session')
-    db.prepare('UPDATE sessions SET updated_at = datetime(\'now\') WHERE id = ?').run(activeSessionId)
-  }
-
-  // Store user message
-  log.debug({ sessionId: activeSessionId, promptLength: prompt.length }, 'storing user message')
+  let sessionId: string
   try {
-    db.prepare(`
-      INSERT INTO messages (session_id, role, content, created_at)
-      VALUES (?, 'user', ?, datetime('now'))
-    `).run(activeSessionId, prompt)
-    log.debug({ sessionId: activeSessionId }, 'user message stored')
+    sessionId = ensureSession(projectId, model, prompt, body.sessionId)
   } catch (err) {
-    log.error({ sessionId: activeSessionId, error: err }, 'failed to store user message')
-    throw err
+    const message = err instanceof Error ? err.message : String(err)
+    return c.json({ error: message }, 400)
   }
 
-  // Notify client that streaming started
-  log.info({ projectId, sessionId: activeSessionId }, 'broadcasting stream start')
+  saveUserMessage(sessionId, prompt)
+
   hub.broadcast(`project:${projectId}`, {
     type: 'chat:stream:start',
-    sessionId: activeSessionId,
+    sessionId,
   })
 
-  // Stream in background — don't await, return session ID immediately
-  log.info({ projectId, sessionId: activeSessionId, model }, 'starting background streaming')
   ;(async () => {
-    log.debug({ sessionId: activeSessionId }, 'background stream started')
-    log.debug({ sessionId: activeSessionId }, 'background stream started')
-    const ac = new AbortController()
-    streamRegistry.register(activeSessionId, projectId, ac)
-    let fullText = ''
+    const abortController = new AbortController()
+    streamRegistry.register(sessionId, projectId, abortController)
+
+    let assistantText = ''
     let inputTokens = 0
     let outputTokens = 0
+    let sawDone = false
+    let sawError = false
     let creditsExhausted = false
+    let stoppedEarly = false
+
+    const toolCalls: Array<any> = []
 
     try {
-      log.info({ sessionId: activeSessionId, agentUrl: resolvedAgentUrl, model }, 'calling CLI agentSend')
       for await (const event of cli.agentSend(resolvedAgentUrl, model, prompt, {
-        signal: ac.signal,
+        signal: abortController.signal,
       })) {
-        log.trace({ sessionId: activeSessionId, eventType: event.type }, 'received event from CLI')
-        
-        // Broadcast ALL events to client
-        hub.broadcast(`project:${projectId}`, { type: 'chat:event', sessionId: activeSessionId, event })
+        hub.broadcast(`project:${projectId}`, { type: 'chat:event', sessionId, event })
 
-        if (event.type === 'text' && event.text) {
-          fullText += event.text
-          log.debug({ sessionId: activeSessionId, len: event.text.length, subtype: (event as any).subtype }, 'text chunk')
-        } else if (event.type === 'text') {
-          log.debug({ sessionId: activeSessionId, subtype: (event as any).subtype, keys: Object.keys(event) }, 'text event no text field')
-        } else if (event.type === 'thinking') {
-          log.debug({ sessionId: activeSessionId }, 'received thinking event')
-          hub.broadcast(`project:${projectId}`, { type: 'chat:reasoning', sessionId: activeSessionId, text: event.thinking?.summary || '' })
-        } else if (event.type === 'done') {
-          inputTokens = event.input_tokens
-          outputTokens = event.output_tokens
-          log.info({ sessionId: activeSessionId, inputTokens, outputTokens }, 'stream finished')
-        } else if (event.type === 'credits_exhausted') {
-          log.warn({ sessionId: activeSessionId, event }, 'CREDITS EXHAUSTED EVENT RECEIVED FROM AGENT')
+        const textChunk = extractTextChunk(event)
+        if (textChunk) {
+          assistantText += textChunk
+        }
+
+        const toolUse = normalizeToolUse(event)
+        if (toolUse) {
+          toolCalls.push({ ...toolUse, status: 'running' })
+        }
+
+        const toolResult = normalizeToolResult(event)
+        if (toolResult) {
+          const target = toolCalls.find((call) => call.id === toolResult.tool_use_id)
+          if (target) {
+            target.result = toolResult.content
+            target.status = toolResult.is_error ? 'error' : 'success'
+          }
+        }
+
+        if (event.type === 'done') {
+          inputTokens = Number(event.input_tokens || 0)
+          outputTokens = Number(event.output_tokens || 0)
+          sawDone = true
+        }
+
+        if (event.type === 'credits_low') {
+          hub.broadcast(`project:${projectId}`, {
+            type: 'credits:low',
+            balance: event.balance,
+          })
+        }
+
+        if (event.type === 'credits_exhausted') {
           creditsExhausted = true
-          // Trigger emergency backup
-          await backupCoordinator.backupNow(projectId).catch(() => {})
-          hub.broadcast(`project:${projectId}`, { type: 'credits:exhausted', sessionId: activeSessionId })
+          stoppedEarly = true
+
+          await backupCoordinator.backupNow(projectId, { trigger: 'credits_exhausted', sessionId }).catch(() => {})
+
+          hub.broadcast(`project:${projectId}`, {
+            type: 'credits:exhausted',
+            sessionId,
+          })
           break
-        } else if (event.type === 'credits_low') {
-          log.warn({ sessionId: activeSessionId, balance: event.balance }, 'credits low')
-          hub.broadcast(`project:${projectId}`, { type: 'credits:low', balance: event.balance })
+        }
+
+        if (event.type === 'error') {
+          sawError = true
+          stoppedEarly = true
+          break
         }
       }
-      log.info({ sessionId: activeSessionId, textLength: fullText.length }, 'CLI stream completed')
     } catch (err) {
-      log.error({ sessionId: activeSessionId, error: err, errorMessage: err instanceof Error ? err.message : String(err), agentUrl: resolvedAgentUrl }, 'stream error')
+      sawError = true
+      stoppedEarly = true
+
+      const message = err instanceof Error ? err.message : String(err)
+      log.error({ sessionId, projectId, message }, 'stream failed')
+
       hub.broadcast(`project:${projectId}`, {
         type: 'chat:stream:error',
-        sessionId: activeSessionId,
-        message: err instanceof Error ? err.message : String(err),
+        sessionId,
+        message,
       })
     } finally {
-      streamRegistry.unregister(activeSessionId)
+      streamRegistry.unregister(sessionId)
     }
 
-    // Store assistant message (even partial on cutoff)
-    if (fullText) {
-      const isCutOff = inputTokens === 0 // no 'done' event means it was cut off
-      log.debug({ sessionId: activeSessionId, textLength: fullText.length, isCutOff }, 'storing assistant message')
-      db.prepare(`
-        INSERT INTO messages (session_id, role, content, input_tokens, output_tokens, status, created_at)
-        VALUES (?, 'assistant', ?, ?, ?, ?, datetime('now'))
-      `).run(activeSessionId, fullText, inputTokens, outputTokens, isCutOff ? 'cut_off' : 'complete')
-      log.debug({ sessionId: activeSessionId }, 'assistant message stored')
+    const status: 'complete' | 'cut_off' | 'error' | 'empty' = sawDone
+      ? 'complete'
+      : sawError
+        ? 'error'
+        : stoppedEarly
+          ? 'cut_off'
+          : assistantText
+            ? 'cut_off'
+            : 'empty'
+
+    if (assistantText || toolCalls.length > 0 || status !== 'empty') {
+      saveAssistantMessage(sessionId, assistantText, {
+        status,
+        inputTokens,
+        outputTokens,
+        toolCalls,
+      })
     }
 
-    log.info({ sessionId: activeSessionId, creditsExhausted }, 'broadcasting stream end')
     hub.broadcast(`project:${projectId}`, {
       type: 'chat:stream:end',
-      sessionId: activeSessionId,
+      sessionId,
+      cutOff: status === 'cut_off' || status === 'error' || status === 'empty',
+      empty: !assistantText,
       creditsExhausted,
-      cutOff: fullText.length === 0 || (fullText.length > 0 && inputTokens === 0),
-      empty: fullText.length === 0,
     })
   })()
 
-  log.info({ sessionId: activeSessionId }, 'returning session ID to client')
-  return c.json({ sessionId: activeSessionId })
+  return c.json({ sessionId })
 })
 
-// GET /chat/sessions?projectId=
 chatRouter.get('/sessions', async (c) => {
   const projectId = c.req.query('projectId')
-  log.info({ projectId }, 'listing sessions')
-  
-  if (!projectId) {
-    log.warn('missing projectId in sessions list request')
-    return c.json({ error: 'projectId required' }, 400)
-  }
+  if (!projectId) return c.json({ error: 'projectId required' }, 400)
 
   const db = getDB()
   const rows = db.prepare(`
@@ -183,72 +292,64 @@ chatRouter.get('/sessions', async (c) => {
     ORDER BY s.updated_at DESC
   `).all(projectId) as any[]
 
-  const sessions = rows.map((s: any) => ({
-    id: s.id,
-    projectId: s.project_id,
-    model: s.model,
-    title: s.title,
-    createdAt: s.created_at,
-    updatedAt: s.updated_at,
-    messageCount: s.message_count,
-  }))
-
-  log.info({ projectId, count: sessions.length }, 'sessions retrieved')
-
-  return c.json({ sessions })
+  return c.json({
+    sessions: rows.map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      model: row.model,
+      title: row.title,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      messageCount: row.message_count,
+    })),
+  })
 })
 
-// GET /chat/sessions/:id
 chatRouter.get('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id')
-  log.info({ sessionId }, 'getting session details')
-  
   const db = getDB()
 
   const sessionRow = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as any
-  if (!sessionRow) {
-    log.warn({ sessionId }, 'session not found')
-    return c.json({ error: 'session not found' }, 404)
-  }
-
-  const session = {
-    id: sessionRow.id,
-    projectId: sessionRow.project_id,
-    model: sessionRow.model,
-    title: sessionRow.title,
-    createdAt: sessionRow.created_at,
-    updatedAt: sessionRow.updated_at,
-  }
+  if (!sessionRow) return c.json({ error: 'session not found' }, 404)
 
   const messageRows = db.prepare(`
-    SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC
+    SELECT *
+    FROM messages
+    WHERE session_id = ?
+    ORDER BY created_at ASC
   `).all(sessionId) as any[]
 
-  const messages = messageRows.map((m: any) => ({
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    createdAt: m.created_at,
-    inputTokens: m.input_tokens,
-    outputTokens: m.output_tokens,
-    status: m.status,
-  }))
-
-  log.info({ sessionId, messageCount: messages.length }, 'session retrieved')
-
-  return c.json({ session, messages })
+  return c.json({
+    session: {
+      id: sessionRow.id,
+      projectId: sessionRow.project_id,
+      model: sessionRow.model,
+      title: sessionRow.title,
+      createdAt: sessionRow.created_at,
+      updatedAt: sessionRow.updated_at,
+    },
+    messages: messageRows.map((row) => ({
+      id: row.id,
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      status: row.status,
+    })),
+  })
 })
 
-// DELETE /chat/sessions/:id
 chatRouter.delete('/sessions/:id', async (c) => {
   const sessionId = c.req.param('id')
   const db = getDB()
+
   db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId)
   db.prepare('DELETE FROM sessions WHERE id = ?').run(sessionId)
+
   return c.json({ ok: true })
 })
 
-// POST /chat/sessions/:id/export — export as markdown
 chatRouter.post('/sessions/:id/export', async (c) => {
   const sessionId = c.req.param('id')
   const db = getDB()
@@ -262,22 +363,22 @@ chatRouter.post('/sessions/:id/export', async (c) => {
 
   const lines: string[] = [
     `# ${session.title ?? 'Session'}`,
-    ``,
+    '',
     `**Project:** ${session.project_id}  `,
     `**Model:** ${session.model}  `,
     `**Created:** ${session.created_at}  `,
-    ``,
-    `---`,
-    ``,
+    '',
+    '---',
+    '',
   ]
 
-  for (const msg of messages) {
-    lines.push(`**${msg.role === 'user' ? 'You' : 'Assistant'}** · ${msg.created_at}`)
-    lines.push(``)
-    lines.push(msg.content)
-    lines.push(``)
-    lines.push(`---`)
-    lines.push(``)
+  for (const message of messages) {
+    lines.push(`**${message.role === 'user' ? 'You' : 'Assistant'}** · ${message.created_at}`)
+    lines.push('')
+    lines.push(message.content)
+    lines.push('')
+    lines.push('---')
+    lines.push('')
   }
 
   return c.text(lines.join('\n'), 200, {
@@ -286,31 +387,30 @@ chatRouter.post('/sessions/:id/export', async (c) => {
   })
 })
 
-// POST /chat/abort — abort active stream
 chatRouter.post('/abort', async (c) => {
-  const { projectId, sessionId } = await c.req.json()
+  const { projectId, sessionId } = await c.req.json<{ projectId?: string; sessionId?: string }>()
+  if (!projectId || !sessionId) return c.json({ error: 'projectId and sessionId required' }, 400)
+
   const aborted = streamRegistry.abort(sessionId, 'user aborted')
-  log.info({ projectId, sessionId, aborted }, 'abort requested')
   hub.broadcast(`project:${projectId}`, { type: 'chat:aborted', sessionId })
+
   return c.json({ ok: true, aborted })
 })
 
-// POST /chat/stop — stop the remote agent (kills credit-draining sessions)
 chatRouter.post('/stop', async (c) => {
-  const { projectId, sessionId } = await c.req.json()
-  
-  // Abort local stream if running
+  const { projectId, sessionId } = await c.req.json<{ projectId?: string; sessionId?: string }>()
+  if (!projectId || !sessionId) return c.json({ error: 'projectId and sessionId required' }, 400)
+
   streamRegistry.abort(sessionId, 'user stopped')
-  
-  // Stop remote agent
+
   const agentUrl = agentUrls.get(projectId)
-  if (agentUrl) {
-    const result = await cli.agentStop(agentUrl)
-    log.info({ projectId, sessionId, agentUrl, result }, 'remote agent stop requested')
-    hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true })
-    return c.json({ ok: true, stopped: result.ok })
+  if (!agentUrl) {
+    hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true, empty: true })
+    return c.json({ ok: true, stopped: false, reason: 'no agentUrl' })
   }
-  
-  hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true })
-  return c.json({ ok: true, stopped: false, reason: 'no agentUrl' })
+
+  const result = await cli.agentStop(agentUrl)
+  hub.broadcast(`project:${projectId}`, { type: 'chat:stream:end', sessionId, cutOff: true, empty: true })
+
+  return c.json({ ok: true, stopped: result.ok })
 })

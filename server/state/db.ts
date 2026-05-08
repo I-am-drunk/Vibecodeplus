@@ -5,14 +5,24 @@ import { getDataDir } from './config.ts'
 
 let db: Database
 
+function safeAlter(sql: string) {
+  try {
+    db.exec(sql)
+  } catch {
+    // already migrated
+  }
+}
+
 export function initDB(): Database {
   const dataDir = getDataDir()
   mkdirSync(dataDir, { recursive: true })
-  const dbPath = join(dataDir, 'data.db')
 
+  const dbPath = join(dataDir, 'data.db')
   db = new Database(dbPath)
+
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
+  db.exec('PRAGMA busy_timeout = 5000')
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS migrations (
@@ -28,11 +38,15 @@ export function initDB(): Database {
       default_model TEXT DEFAULT 'claude-sonnet-4-6',
       last_opened_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       sandbox_host TEXT,
       sandbox_port INTEGER,
       sandbox_user TEXT,
       sandbox_key_path TEXT,
-      sandbox_acquired_at DATETIME
+      sandbox_acquired_at DATETIME,
+      api_key_hash TEXT,
+      snapshot_dir TEXT,
+      snapshot_at DATETIME
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -83,18 +97,16 @@ export function initDB(): Database {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE INDEX IF NOT EXISTS idx_projects_last_opened ON projects(last_opened_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_backups_project ON backups(project_id, created_at DESC);
   `)
 
-
-  // Continuation migrations
-  for (const sql of [
-    'ALTER TABLE projects ADD COLUMN api_key_hash TEXT',
-    'ALTER TABLE projects ADD COLUMN snapshot_dir TEXT',
-    'ALTER TABLE projects ADD COLUMN snapshot_at DATETIME',
-  ]) { try { db.exec(sql) } catch { /* already exists */ } }
+  safeAlter('ALTER TABLE projects ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP')
+  safeAlter('ALTER TABLE projects ADD COLUMN api_key_hash TEXT')
+  safeAlter('ALTER TABLE projects ADD COLUMN snapshot_dir TEXT')
+  safeAlter('ALTER TABLE projects ADD COLUMN snapshot_at DATETIME')
 
   return db
 }
