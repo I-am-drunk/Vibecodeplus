@@ -161,6 +161,14 @@ Supported environment overrides:
 
 ---
 
+## Program documentation
+
+- Reliability and UX uplift execution plan: `docs/reliability/vibecodeplus-master-plan.md`
+- Issue triage template: `docs/reliability/issue-triage-template.md`
+- Phase gate checklist: `docs/reliability/phase-gate-checklist.md`
+
+---
+
 ## Changelog
 
 ### v0.1.0 (2026-05-08)
