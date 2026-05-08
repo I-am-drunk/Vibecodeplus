@@ -1,7 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
-import { serveStatic } from 'hono/bun'
 import path from 'path'
 import { initDB, getDB } from './state/db.ts'
 import { loadConfig, getConfig } from './state/config.ts'
@@ -10,7 +9,6 @@ import { cli } from './cli/wrapper.ts'
 import { wsHub as hub } from './ws/hub.ts'
 import { sshManager } from './ssh/manager.ts'
 import { fileWatcher } from './ssh/watcher.ts'
-import { backupCoordinator } from './backup/coordinator.ts'
 import { authRouter } from './routes/auth.ts'
 import { projectsRouter } from './routes/projects.ts'
 import { chatRouter } from './routes/chat.ts'
@@ -20,36 +18,41 @@ import { previewRouter } from './routes/preview.ts'
 import { terminalRouter } from './routes/terminal.ts'
 import { settingsRouter } from './routes/settings.ts'
 import { continuationRouter } from './routes/continuation.ts'
-
 import { streamRegistry } from './state/streams.ts'
+import { addBrowserLogClient, removeBrowserLogClient } from './lib/logger.ts'
+
 initDB()
 loadConfig()
-loadStoredAuth()
+const storedAuth = loadStoredAuth()
+if (storedAuth?.key) cli.setApiKey(storedAuth.key)
 await cli.resolveBinary()
 
-// Clean up orphaned sessions (0 messages — agent never responded or server crashed mid-stream)
 {
   const deleted = getDB().prepare(`
     DELETE FROM sessions WHERE id NOT IN (SELECT DISTINCT session_id FROM messages)
   `).run()
-  if (deleted.changes > 0) console.log(`[server] cleaned up ${deleted.changes} orphaned empty sessions`)
+
+  if (deleted.changes > 0) {
+    console.log(`[server] cleaned up ${deleted.changes} orphaned empty sessions`)
+  }
 }
 
-// Clean up orphaned projects (don't exist remotely)
 {
   const auth = loadStoredAuth()
   if (auth?.key) {
     const result = await cli.listProjects()
-    if (result.ok && result.data?.projects) {
-      const remoteIds = new Set(result.data.projects.map((p: any) => p.id))
+    if (result.ok) {
+      const remoteIds = new Set(result.data.map((project: any) => project.id))
       const local = getDB().prepare('SELECT id FROM projects').all() as { id: string }[]
+
       let cleaned = 0
       for (const { id } of local) {
         if (!remoteIds.has(id)) {
           getDB().prepare('DELETE FROM projects WHERE id = ?').run(id)
-          cleaned++
+          cleaned += 1
         }
       }
+
       if (cleaned > 0) console.log(`[server] cleaned up ${cleaned} orphaned projects not in remote`)
     }
   }
@@ -58,15 +61,12 @@ await cli.resolveBinary()
 const config = getConfig()
 const PORT = config.port ?? 3847
 
-console.log('[server] NODE_ENV:', process.env.NODE_ENV)
-
 const app = new Hono()
-
 const isDev = process.env.NODE_ENV === 'development'
-app.use('*', cors({ origin: isDev ? 'http://localhost:5173' : '*', credentials: true }))
-if (process.env.NODE_ENV === 'development') app.use('*', logger())
 
-// API routes
+app.use('*', cors({ origin: isDev ? 'http://localhost:5173' : '*', credentials: true }))
+if (isDev) app.use('*', logger())
+
 app.route('/api/auth', authRouter)
 app.route('/api/projects', projectsRouter)
 app.route('/api/chat', chatRouter)
@@ -75,65 +75,58 @@ app.route('/api/backups', backupsRouter)
 app.route('/api/preview', previewRouter)
 app.route('/api/terminal', terminalRouter)
 app.route('/api/settings', settingsRouter)
-  app.route('/api/continuation', continuationRouter)
+app.route('/api/continuation', continuationRouter)
 
-// Health check
-app.get('/api/health', (c) => c.json({ ok: true, version: '1.0.0' }))
+app.get('/api/health', (c) => c.json({ ok: true, version: '0.1.0' }))
 
-// In production, serve the built frontend
-if (process.env.NODE_ENV !== 'development') {
+if (!isDev) {
   const distPath = path.resolve(process.cwd(), 'dist', 'client')
-  console.log('[server] Static files path:', distPath)
-  
-  // Serve static assets
+
   app.get('/assets/*', async (c) => {
     const filePath = path.join(distPath, c.req.path)
     const file = Bun.file(filePath)
-    if (await file.exists()) {
-      const ext = filePath.split('.').pop()
-      const mimeTypes: Record<string, string> = {
-        'js': 'application/javascript',
-        'css': 'text/css',
-        'json': 'application/json',
-        'png': 'image/png',
-        'jpg': 'image/jpeg',
-        'jpeg': 'image/jpeg',
-        'svg': 'image/svg+xml',
-        'woff': 'font/woff',
-        'woff2': 'font/woff2',
-      }
-      const contentType = mimeTypes[ext || ''] || 'application/octet-stream'
-      return new Response(file, { headers: { 'Content-Type': contentType } })
+
+    if (!(await file.exists())) return c.notFound()
+
+    const ext = filePath.split('.').pop()
+    const mimeTypes: Record<string, string> = {
+      js: 'application/javascript',
+      css: 'text/css',
+      json: 'application/json',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      svg: 'image/svg+xml',
+      woff: 'font/woff',
+      woff2: 'font/woff2',
     }
-    return c.notFound()
+
+    const contentType = mimeTypes[ext || ''] || 'application/octet-stream'
+    return new Response(file, { headers: { 'Content-Type': contentType } })
   })
-  
-  app.get('/favicon.svg', async (c) => {
+
+  app.get('/favicon.svg', async () => {
     const file = Bun.file(path.join(distPath, 'favicon.svg'))
     return new Response(file, { headers: { 'Content-Type': 'image/svg+xml' } })
   })
-  
-  // SPA fallback - serve index.html for all other routes
+
   app.get('*', async (c) => {
     const html = await Bun.file(path.join(distPath, 'index.html')).text()
     return c.html(html)
   })
 }
 
-// WebSocket server for real-time events + terminal
-const server = Bun.serve({
+Bun.serve({
   port: PORT,
   fetch(req, server) {
     const url = new URL(req.url)
 
-    // WebSocket upgrade for logs
     if (url.pathname === '/ws/logs') {
       const upgraded = server.upgrade(req, { data: { type: 'logs' } })
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 400 })
     }
 
-    // WebSocket upgrade for hub (project events)
     if (url.pathname.startsWith('/ws/project/')) {
       const projectId = url.pathname.split('/ws/project/')[1]
       const upgraded = server.upgrade(req, { data: { type: 'hub', projectId } })
@@ -141,10 +134,8 @@ const server = Bun.serve({
       return new Response('WebSocket upgrade failed', { status: 400 })
     }
 
-    // WebSocket upgrade for terminal
     if (url.pathname.startsWith('/ws/terminal/')) {
-      const parts = url.pathname.split('/')
-      const projectId = parts[3]
+      const projectId = url.pathname.split('/')[3]
       const upgraded = server.upgrade(req, { data: { type: 'terminal', projectId } })
       if (upgraded) return undefined
       return new Response('WebSocket upgrade failed', { status: 400 })
@@ -155,56 +146,55 @@ const server = Bun.serve({
 
   websocket: {
     open(ws) {
-      const { type, projectId } = ws.data as any
+      const { type, projectId } = ws.data as { type: string; projectId?: string }
 
       if (type === 'logs') {
-        const { addBrowserLogClient } = require('./lib/logger.ts')
         addBrowserLogClient(ws)
         return
       }
 
       if (type === 'hub') {
+        if (!projectId) return
+
         hub.subscribe(ws as any, [`project:${projectId}`])
         hub.broadcast(`project:${projectId}`, { type: 'ws:connected' })
-        // Start file watcher only if project exists in local DB
-        if (projectId && projectId !== 'null' && projectId !== 'undefined') {
-          const exists = getDB().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)
-          if (exists) fileWatcher.start(projectId)
-        }
-      } else if (type === 'terminal') {
-        // SSH terminal — connect a shell channel
-        sshManager.getConnection(projectId).then(conn => {
-          conn.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
-            if (err) {
-              ws.send(JSON.stringify({ type: 'terminal:error', message: err.message }))
-              ws.close()
-              return
-            }
-            ;(ws as any).__termStream = stream
 
-            stream.on('data', (chunk: Buffer) => {
-              ws.send(chunk)
+        const exists = getDB().prepare('SELECT id FROM projects WHERE id = ?').get(projectId)
+        if (exists) fileWatcher.start(projectId)
+        return
+      }
+
+      if (type === 'terminal') {
+        if (!projectId) return
+
+        sshManager.getConnection(projectId)
+          .then((conn) => {
+            conn.shell({ term: 'xterm-256color', cols: 80, rows: 24 }, (err, stream) => {
+              if (err) {
+                ws.send(JSON.stringify({ type: 'terminal:error', message: err.message }))
+                ws.close()
+                return
+              }
+
+              ;(ws as any).__termStream = stream
+
+              stream.on('data', (chunk: Buffer) => ws.send(chunk))
+              stream.stderr.on('data', (chunk: Buffer) => ws.send(chunk))
+              stream.on('close', () => ws.close())
             })
-            stream.stderr.on('data', (chunk: Buffer) => {
-              ws.send(chunk)
-            })
-            stream.on('close', () => ws.close())
           })
-        }).catch(err => {
-          ws.send(JSON.stringify({ type: 'terminal:error', message: err.message }))
-          ws.close()
-        })
+          .catch((err) => {
+            ws.send(JSON.stringify({ type: 'terminal:error', message: err.message }))
+            ws.close()
+          })
       }
     },
 
     message(ws, data) {
-      const { type } = ws.data as any
+      const { type } = ws.data as { type: string }
 
-      if (type === 'hub') {
-        // Route to WebSocket hub for project events
-        if (typeof data === 'string') {
-          hub.handleMessage(ws as any, data)
-        }
+      if (type === 'hub' && typeof data === 'string') {
+        hub.handleMessage(ws as any, data)
       }
 
       if (type === 'terminal') {
@@ -213,11 +203,11 @@ const server = Bun.serve({
 
         if (typeof data === 'string') {
           try {
-            const msg = JSON.parse(data)
-            if (msg.type === 'terminal:resize') {
-              stream.setWindow(msg.rows, msg.cols, 0, 0)
-            } else if (msg.type === 'terminal:input') {
-              stream.write(msg.data)
+            const message = JSON.parse(data)
+            if (message.type === 'terminal:resize') {
+              stream.setWindow(message.rows, message.cols, 0, 0)
+            } else if (message.type === 'terminal:input') {
+              stream.write(message.data)
             }
           } catch {
             stream.write(data)
@@ -229,16 +219,18 @@ const server = Bun.serve({
     },
 
     close(ws) {
-      const { type, projectId } = ws.data as any
+      const { type, projectId } = ws.data as { type: string; projectId?: string }
+
       if (type === 'logs') {
-        const { removeBrowserLogClient } = require('./lib/logger.ts')
         removeBrowserLogClient(ws)
-      } else if (type === 'hub') {
+      } else if (type === 'hub' && projectId) {
         hub.unsubscribe(ws as any, [`project:${projectId}`])
       } else if (type === 'terminal') {
         const stream = (ws as any).__termStream
         if (stream) stream.end()
       }
+
+      hub.removeClient(ws as any)
     },
   },
 })
@@ -246,16 +238,15 @@ const server = Bun.serve({
 console.log(`\n  Vibecode Studio`)
 console.log(`  Running at http://localhost:${PORT}\n`)
 
-// Broadcast file changes to subscribed clients
 fileWatcher.onChange((projectId, changes) => {
   hub.broadcast(`project:${projectId}`, { type: 'file:changed', changes })
 })
 
-// Graceful shutdown — kill all active streams to prevent credit drain
 function shutdown(signal: string) {
   console.log(`[server] ${signal} received — stopping ${streamRegistry.getActive().length} active streams`)
   streamRegistry.abortAll(`server ${signal}`)
   process.exit(0)
 }
+
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))

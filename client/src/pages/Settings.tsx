@@ -331,7 +331,7 @@ export function SettingsPage() {
                   <p className="text-[18px] font-bold text-white mb-2">Vibecode Studio</p>
                   <p className="text-[14px] text-white/35 mb-5">AI Development Environment</p>
                   <span className="px-3 py-1.5 rounded-lg bg-white/[0.05] border border-white/[0.07] text-[13px] font-mono text-white/30">
-                    v1.0.0
+                    v0.1.0
                   </span>
                 </div>
               </Card>

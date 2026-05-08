@@ -2,48 +2,106 @@ import { createLogger } from '../lib/logger.ts'
 
 const log = createLogger('streams')
 
-interface ActiveStream {
+export interface ActiveStream {
   sessionId: string
   projectId: string
-  abort: AbortController
+  abortController: AbortController
   startedAt: Date
 }
 
 class StreamRegistry {
-  private streams = new Map<string, ActiveStream>()
+  private bySession = new Map<string, ActiveStream>()
+  private byProject = new Map<string, Set<string>>()
 
-  register(sessionId: string, projectId: string, abort: AbortController) {
-    this.streams.set(sessionId, { sessionId, projectId, abort, startedAt: new Date() })
-    log.debug({ sessionId, projectId, total: this.streams.size }, 'stream registered')
+  register(sessionId: string, projectId: string, abortController: AbortController) {
+    const existing = this.bySession.get(sessionId)
+    if (existing) {
+      try {
+        existing.abortController.abort('replaced stream')
+      } catch {
+        // no-op
+      }
+      this.unregister(sessionId)
+    }
+
+    const stream: ActiveStream = {
+      sessionId,
+      projectId,
+      abortController,
+      startedAt: new Date(),
+    }
+
+    this.bySession.set(sessionId, stream)
+
+    if (!this.byProject.has(projectId)) {
+      this.byProject.set(projectId, new Set())
+    }
+    this.byProject.get(projectId)!.add(sessionId)
+
+    log.debug({ sessionId, projectId, total: this.bySession.size }, 'stream registered')
   }
 
   unregister(sessionId: string) {
-    this.streams.delete(sessionId)
-    log.debug({ sessionId, total: this.streams.size }, 'stream unregistered')
+    const stream = this.bySession.get(sessionId)
+    if (!stream) return
+
+    this.bySession.delete(sessionId)
+
+    const projectSet = this.byProject.get(stream.projectId)
+    if (projectSet) {
+      projectSet.delete(sessionId)
+      if (projectSet.size === 0) this.byProject.delete(stream.projectId)
+    }
+
+    log.debug({ sessionId, total: this.bySession.size }, 'stream unregistered')
   }
 
   abort(sessionId: string, reason = 'aborted') {
-    const stream = this.streams.get(sessionId)
+    const stream = this.bySession.get(sessionId)
     if (!stream) return false
-    log.info({ sessionId, reason }, 'aborting stream')
-    stream.abort.abort(reason)
-    this.streams.delete(sessionId)
+
+    log.info({ sessionId, projectId: stream.projectId, reason }, 'aborting stream')
+    try {
+      stream.abortController.abort(reason)
+    } finally {
+      this.unregister(sessionId)
+    }
     return true
   }
 
-  abortAll(reason = 'server shutdown') {
-    const count = this.streams.size
-    if (count === 0) return
-    log.warn({ count, reason }, 'aborting all active streams')
-    for (const [sessionId, stream] of this.streams) {
-      log.info({ sessionId, projectId: stream.projectId, reason }, 'auto-stopping stream')
-      stream.abort.abort(reason)
+  abortProject(projectId: string, reason = 'project abort') {
+    const ids = this.byProject.get(projectId)
+    if (!ids || ids.size === 0) return 0
+
+    let count = 0
+    for (const sessionId of [...ids]) {
+      if (this.abort(sessionId, reason)) count += 1
     }
-    this.streams.clear()
+
+    log.warn({ projectId, count, reason }, 'aborted project streams')
+    return count
+  }
+
+  abortAll(reason = 'server shutdown') {
+    const ids = [...this.bySession.keys()]
+    if (ids.length === 0) return
+
+    log.warn({ count: ids.length, reason }, 'aborting all active streams')
+    for (const sessionId of ids) {
+      this.abort(sessionId, reason)
+    }
+  }
+
+  has(sessionId: string) {
+    return this.bySession.has(sessionId)
+  }
+
+  get(sessionId: string) {
+    return this.bySession.get(sessionId)
   }
 
   getActive() {
-    return [...this.streams.values()]
+    return [...this.bySession.values()]
   }
 }
 

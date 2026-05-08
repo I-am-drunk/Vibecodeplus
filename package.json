@@ -1,6 +1,6 @@
 {
   "name": "vibecode-studio",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,6 @@
     "@monaco-editor/react": "^4.6.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "better-sqlite3": "^9.6.0",
     "clsx": "^2.1.1",
     "hono": "^4.4.0",
     "lucide-react": "^0.383.0",
@@ -28,7 +27,6 @@
     "zustand": "^4.5.4"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.14.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
