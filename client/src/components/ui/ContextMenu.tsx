@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 
-export interface MenuItem {
+export type MenuItem = {
   label: string
   icon?: ReactNode
-  onClick: () => void
+  onClick: () => void | Promise<void>
   destructive?: boolean
-  separator?: boolean
+  separator?: never
   disabled?: boolean
+} | {
+  separator: true
+  label?: never
+  icon?: never
+  onClick?: never
+  destructive?: never
+  disabled?: never
 }
 
 interface Props {
