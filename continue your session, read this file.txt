@@ -2173,3 +2173,845 @@ Agent: Hi! How can I help you today?
 You: Make a code learning app like coddy. Make me a apple themed code learning app and look at this and use its  code. Use apple's hid, and hid best pratices. THINK HARTHINK HARD, MAKE THIS LOOK PERFECT. THere should be differnet quiz types and learning paths like coddy, some could be challanges with code editors and the questions qould be beside also of these lessons, but some should be button click stuff, JUST THINK HARD ABOUT A BUNCH OF THESE, THINK ABOUT CODDY, DO RESEARCH ABOUT CODDY ONLINE. The visuals are the mos t important part, ALSO YOU MADE COMPROMISES, MAKE IT ACTUALLY GOOD"
 
 Agent: Let me look at the existing code before building.Now I'm building this. Let me write everything in parallel batches.Now writing the curriculum data and core components:
+
+Listed projects
+Finished working
+Ran command
+pwd
+Finished working
+Fetched tasks
+Found 0 tasks
+Finished working
+
+1	# Vibecodeplus Rollback Runbook
+2	
+3	**Version:** 1.0  
+4	**Last updated:** May 8, 2026  
+5	**Applies to:** migration_v2, stream_fsm_v2, watcher_fsm_v2, UI state-machine rewrite
+6	
+7	---
+8	
+9	## 1) Rollback objectives
+10	
+11	1. Restore stable service state with minimal data-risk.
+12	2. Preserve user data and source projects during rollback.
+13	3. Disable risky features via flags before full version rollback.
+14	4. Keep an auditable timeline of rollback decisions and outcomes.
+15	
+16	---
+17	
+18	## 2) Trigger conditions
+19	
+20	Initiate rollback when one or more conditions occur:
+21	
+22	- Sev0 or Sev1 incident tied to new tranche functionality
+23	- Duplicate stream finalization above threshold for 15+ minutes
+24	- Migration failure rate exceeds agreed threshold and cannot be mitigated quickly
+25	- Watcher forbidden loops recur despite quarantine controls
+26	- RC/canary gate fails with no viable hotfix in SLA window
+27	
+28	---
+29	
+30	## 3) Rollback levels
+31	
+32	## Level A - Feature-flag rollback (preferred first action)
+33	
+34	Disable only new behavior:
+35	
+36	- `stream_fsm_v2=false`
+37	- `migration_v2=false`
+38	- `watcher_fsm_v2=false`
+39	
+40	Use when data schema is still compatible and incident is behavior-only.
+41	
+42	## Level B - Service rollback
+43	
+44	Deploy previous stable server/client artifacts while preserving current DB.
+45	
+46	Use when feature flags are insufficient or new code paths are too unstable.
+47	
+48	## Level C - Schema rollback (highest risk)
+49	
+50	Rollback DB schema changes using pre-tested down migrations.
+51	
+52	Use only when schema-level defect is confirmed and Level A/B cannot restore safe behavior.
+53	
+54	---
+55	
+56	## 4) Required pre-rollback checks
+57	
+58	1. Confirm incident commander assignment.
+59	2. Snapshot current DB and auth/config files.
+60	3. Export active migration and stream state tables for forensic audit.
+61	4. Announce freeze on new deployments and migration jobs.
+62	5. Record exact UTC start time and suspected change set.
+63	
+64	---
+65	
+66	## 5) Step-by-step rollback procedure
+67	
+68	## 5.1 Immediate containment (0-15 minutes)
+69	
+70	1. Enable incident mode and deployment freeze.
+71	2. Flip kill-switch flags (Level A) for affected subsystem(s).
+72	3. Stop new migration enactments and non-critical background jobs.
+73	4. Verify user-impact metrics begin recovering.
+74	
+75	**Success checkpoint:** impact curve drops within 10 minutes.
+76	
+77	## 5.2 Artifact rollback (15-45 minutes)
+78	
+79	If Level A insufficient:
+80	
+81	1. Deploy last known-good server artifact.
+82	2. Deploy last known-good client artifact.
+83	3. Keep DB in read/write unless corruption risk is identified.
+84	4. Re-run smoke checks:
+85	   - auth/login status
+86	   - projects list/open
+87	   - chat send/stream/stop
+88	   - file tree/list/read/write
+89	   - terminal connect/disconnect
+90	
+91	**Success checkpoint:** core user journeys pass smoke matrix.
+92	
+93	## 5.3 Schema rollback (45-120 minutes; controlled)
+94	
+95	Only if required and approved by incident commander + DB owner:
+96	
+97	1. Place app into restricted mode (writes paused where needed).
+98	2. Run tested down migration set for affected release.
+99	3. Validate table/index integrity and row counts.
+100	4. Restore compatibility flags to v1 paths.
+101	5. Run migration/alias/stream consistency checks.
+102	
+103	**Success checkpoint:** DB + service compatibility restored and smoke tests pass.
+104	
+105	---
+106	
+107	## 6) Data safety rules
+108	
+109	- Never delete source project data during incident response.
+110	- Preserve `project_migrations` and `project_aliases` snapshots before schema mutation.
+111	- Preserve stream event and terminal-state logs for replay analysis.
+112	- Prefer additive hotfixes and flag fallback over destructive table rewrites.
+113	
+114	---
+115	
+116	## 7) Verification matrix after rollback
+117	
+118	Run and record pass/fail for:
+119	
+120	1. Auth status and key rotation sanity
+121	2. Project list/open (including alias old->new resolution behavior)
+122	3. Continuation status endpoint response validity
+123	4. Watcher start/stop and forbidden behavior stability
+124	5. SSH acquire/singleflight behavior
+125	6. Chat streaming terminal-state correctness
+126	7. UI dialog transitions and workspace load path
+127	
+128	If any item fails, continue incident mitigation and do not clear freeze.
+129	
+130	---
+131	
+132	## 8) Communication protocol
+133	
+134	- **T+0:** Incident declared, rollback level selected
+135	- **T+15:** Containment update
+136	- **T+45:** Artifact rollback status update
+137	- **T+90:** Schema rollback status update (if used)
+138	- **Resolution:** Publish summary + customer impact + next actions
+139	
+140	All updates include:
+141	
+142	- Current rollback level
+143	- Affected subsystem(s)
+144	- User-facing impact
+145	- ETA to next checkpoint
+146	
+147	---
+148	
+149	## 9) Post-rollback actions (mandatory)
+150	
+151	1. Create incident report within 24 hours.
+152	2. Link failing case IDs and missed checkpoints.
+153	3. Add or expand regression tests for escaped defect.
+154	4. Run rollback drill retrospective and update this runbook.
+155	5. Require explicit re-entry criteria before re-enabling v2 flags.
+156	
+157	---
+158	
+159	## 10) Rollback drill acceptance checklist
+160	
+161	- [ ] Drill executed end-to-end in non-prod
+162	- [ ] Time-to-containment within SLA
+163	- [ ] Level A/B/C decision points documented
+164	- [ ] Data preservation verified
+165	- [ ] Smoke matrix passed after rollback
+166	- [ ] Stakeholder communications logged
+167	- [ ] Runbook updates committed
+168	
+169	Passing this checklist satisfies checkpoint **CP-46**.
+
+Generated task plan
+Review the plan to continue
+Task plan
+Vibecodeplus
+Implement no-compromise reliability tranche
+
+IMPLEMENTATION TASK — THIS IS A CODING RUN, NOT A SPEC/PLAN RUN.
+
+You must implement real server+client code changes immediately. Do not return docs-only or planning-only output.
+
+Context (must use):
+
+    Repo already contains docs/tranche-execution-plan.md, docs/release-gates.md, docs/rollback-runbook.md.
+    Previous attempts produced planning artifacts and partial fixes, but the system is still broken/incomplete.
+    User-reported live regressions include:
+        continuation retries can create duplicate/orphan target projects,
+        many unresolved errors remain,
+        dashboard/workspace UX quality is poor,
+        when sending larger prompts, AI sometimes never responds,
+        noisy debug logs appear in user-facing runtime paths.
+
+PRIMARY MISSION (this run) Deliver a high-impact P0/P1 reliability implementation tranche that turns the existing plan docs into working code and closes the most damaging runtime failures.
+
+NON-NEGOTIABLE RULES
+
+    No plan/spec-only response.
+    No markdown-only work.
+    Implement code + tests + validation commands.
+    Prioritize correctness, determinism, and crash-proofing over cosmetic churn.
+    If full scope cannot finish, ship fully-complete P0/P1 subset with evidence and explicit remaining backlog.
+
+MANDATORY IMPLEMENTATION SCOPE A) Runtime contract hardening at trust boundaries
+
+    Add/finish runtime validators for untrusted CLI/API/WS payloads.
+    Eliminate unsafe nested payload access patterns in critical routes/hot paths.
+    Normalize all critical failure paths to stable machine-readable error envelopes.
+    Touch at minimum:
+        server/cli/wrapper.ts
+        server/routes/projects.ts
+        server/routes/continuation.ts
+        server/routes/chat.ts
+        server/routes/auth.ts
+        client/src/lib/api.ts
+
+B) Deterministic continuation/migration with source preservation
+
+    Make continuation idempotent and safe on retries.
+    Reuse existing target project if migration already created one.
+    Prevent duplicate target creation across retries/races.
+    Clean up true orphan targets only when safe.
+    Persist and honor oldProjectId -> newProjectId mapping.
+    Workspace-open path must resolve mapping deterministically.
+    Guarantee source preservation on partial/incomplete failure paths.
+    Ensure migration status is explicit and queryable by UI.
+    Touch at minimum:
+        server/continuation/orchestrator.ts
+        server/state/migrations.ts
+        server/state/db.ts
+        server/routes/continuation.ts
+        server/routes/projects.ts
+
+C) Watcher/SSH forbidden-loop containment
+
+    Implement/enforce watcher lifecycle with blocked/cooldown semantics and bounded retries.
+    Stop repeated forbidden/auth storm loops.
+    Ensure stale watcher teardown and migration remap correctness.
+    Align SSH acquire/retry logic with singleflight or equivalent lock to avoid thundering-herd reconnect.
+    Touch at minimum:
+        server/ssh/watcher.ts
+        server/ssh/manager.ts
+
+D) Chat stream exactly-once terminal semantics + large prompt reliability
+
+    Fix stream terminal race/duplication paths (complete/cut_off/empty/error/aborted) so finalization is idempotent.
+    Prevent duplicate terminal handling from stop/abort and async completion races.
+    Harden client terminal event handling for duplicate/out-of-order events.
+    FIX THE USER-REPORTED “large prompt gets no response” issue:
+        investigate and patch server/client flow so large prompts either stream normally or fail fast with explicit recoverable error,
+        ensure UI never gets stuck indefinitely waiting,
+        add timeout/error transition and clear retry path,
+        preserve input responsiveness.
+    Touch at minimum:
+        server/routes/chat.ts
+        server/state/streams.ts
+        server/ws/hub.ts (if needed)
+        client/src/hooks/useProjectEvents.ts
+        client/src/store/chat.ts
+        client/src/hooks/useChat.ts
+
+E) UI reliability + quality pass (dashboard/workspace/dialogs)
+
+    Remove noisy debug logging from user-facing flows (guard behind debug flag or remove).
+    Unify loading/error/retry/migration states in workspace/continuation/key-recovery/chat surfaces.
+    Replace fake progress with real backend status.
+    Improve dashboard/workspace UX polish for clarity (state badges, spacing/visual hierarchy, error affordances), while keeping scope focused on reliability-critical UX.
+    Touch at minimum:
+        client/src/pages/Dashboard.tsx
+        client/src/pages/Workspace.tsx
+        client/src/components/dialogs/ContinuationDialog.tsx
+        client/src/components/dialogs/KeyRecoveryDialog.tsx
+        client/src/components/workspace/ChatPanel.tsx
+        client/src/store/projects.ts
+        client/src/store/continuation.ts
+        client/src/store/workspace.ts
+
+REQUIRED TESTS (must add/update)
+
+    malformed listProjects/verify payload does not crash continuation verification.
+    migration retry idempotency: no duplicate target project creation.
+    orphan cleanup behavior: only safe orphan targets cleaned.
+    mapping persistence and workspace-open canonical resolution.
+    watcher forbidden/auth repeated failure enters blocked/cooldown and avoids retry storm.
+    stream terminal dedupe/idempotency for duplicate/out-of-order terminal events.
+    large prompt path: request succeeds or deterministic timeout/error (no indefinite pending UI).
+    useChat retryFromIndex regression + input responsiveness under transient failure.
+
+If test scripts/harness are insufficient, add minimal robust scripts without breaking existing workflows.
+
+VALIDATION COMMANDS (must run and report output summary)
+
+    bun run typecheck (add script if missing)
+    bun run build
+    bun test (or equivalent test command you add)
+
+COMMIT + DELIVERY REQUIREMENTS
+
+    Use logical commit chunks (not one giant commit).
+    Return:
+        exact files changed,
+        concrete before->after behavior per defect family,
+        tests added and what each proves,
+        typecheck/build/test output summary,
+        remaining backlog by severity (P0/P1/P2) with next tranche recommendation.
+
+FAIL CONDITIONS (automatic task failure)
+
+    Plan/spec-only response.
+    Docs-only changes.
+    No tests for key regressions.
+    No validation command results.
+    Large-prompt stall not addressed.
+
+Execution note: Use existing docs as requirements input, but implementation evidence is the only success criteria.
+Continue chatting to make changes
+
+Done — I created a new implementation-first task for Vibecodeplus with a no-compromise prompt that forces real coding (not planning/docs-only).
+Task created
+
+    Title: Implement no-compromise reliability tranche
+    Project: rn786cng
+
+It explicitly requires:
+
+    real server + client code changes,
+    fixing continuation duplicate/orphan behavior,
+    fixing the large-prompt no-response bug,
+    watcher/SSH loop containment,
+    stream terminal idempotency,
+    dashboard/workspace/dialog UX reliability cleanup,
+    regression tests for each defect family,
+    and bun run typecheck, bun run build, bun test evidence.
+
+Please approve/run it in the UI, and once it starts I can help you audit it against your “no compromises” bar.
+Implement no-compromise reliability tranche
+Implement no-compromise reliability tranche IMPLEMENTATION TASK — THIS IS A CODING RUN, NOT A SPEC/PLAN RUN. You must implement real server+client code changes immediately. Do not return docs-only or planning-only output. Context (must use): Repo already contains docs/tranche-execution-plan.md, docs/release-gates.md, docs/rollback-runbook.md. Previous attempts produced planning artifacts and partial fixes, but the system is still broken/incomplete. User-reported live regressions include: continuation retries can create duplicate/orphan target projects, many unresolved errors remain, dashboard/workspace UX quality is poor, when sending larger prompts, AI sometimes never responds, noisy debug logs appear in user-facing runtime paths. PRIMARY MISSION (this run) Deliver a high-impact P0/P1 reliability implementation tranche that turns the existing plan docs into working code and closes the most damaging runtime failures. NON-NEGOTIABLE RULES No plan/spec-only response. No markdown-only work. Implement code + tests + validation commands. Prioritize correctness, determinism, and crash-proofing over cosmetic churn. If full scope cannot finish, ship fully-complete P0/P1 subset with evidence and explicit remaining backlog. MANDATORY IMPLEMENTATION SCOPE A) Runtime contract hardening at trust boundaries Add/finish runtime validators for untrusted CLI/API/WS payloads. Eliminate unsafe nested payload access patterns in critical routes/hot paths. Normalize all critical failure paths to stable machine-readable error envelopes. Touch at minimum: server/cli/wrapper.ts server/routes/projects.ts server/routes/continuation.ts server/routes/chat.ts server/routes/auth.ts client/src/lib/api.ts B) Deterministic continuation/migration with source preservation Make continuation idempotent and safe on retries. Reuse existing target project if migration already created one. Prevent duplicate target creation across retries/races. Clean up true orphan targets only when safe. Persist and honor oldProjectId -> newProjectId mapping. Workspace-open path must resolve mapping deterministically. Guarantee source preservation on partial/incomplete failure paths. Ensure migration status is explicit and queryable by UI. Touch at minimum: server/continuation/orchestrator.ts server/state/migrations.ts server/state/db.ts server/routes/continuation.ts server/routes/projects.ts C) Watcher/SSH forbidden-loop containment Implement/enforce watcher lifecycle with blocked/cooldown semantics and bounded retries. Stop repeated forbidden/auth storm loops. Ensure stale watcher teardown and migration remap correctness. Align SSH acquire/retry logic with singleflight or equivalent lock to avoid thundering-herd reconnect. Touch at minimum: server/ssh/watcher.ts server/ssh/manager.ts D) Chat stream exactly-once terminal semantics + large prompt reliability Fix stream terminal race/duplication paths (complete/cut_off/empty/error/aborted) so finalization is idempotent. Prevent duplicate terminal handling from stop/abort and async completion races. Harden client terminal event handling for duplicate/out-of-order events. FIX THE USER-REPORTED “large prompt gets no response” issue: investigate and patch server/client flow so large prompts either stream normally or fail fast with explicit recoverable error, ensure UI never gets stuck indefinitely waiting, add timeout/error transition and clear retry path, preserve input responsiveness. Touch at minimum: server/routes/chat.ts server/state/streams.ts server/ws/hub.ts (if needed) client/src/hooks/useProjectEvents.ts client/src/store/chat.ts client/src/hooks/useChat.ts E) UI reliability + quality pass (dashboard/workspace/dialogs) Remove noisy debug logging from user-facing flows (guard behind debug flag or remove). Unify loading/error/retry/migration states in workspace/continuation/key-recovery/chat surfaces. Replace fake progress with real backend status. Improve dashboard/workspace UX polish for clarity (state badges, spacing/visual hierarchy, error affordances), while keeping scope focused on reliability-critical UX. Touch at minimum: client/src/pages/Dashboard.tsx client/src/pages/Workspace.tsx client/src/components/dialogs/ContinuationDialog.tsx client/src/components/dialogs/KeyRecoveryDialog.tsx client/src/components/workspace/ChatPanel.tsx client/src/store/projects.ts client/src/store/continuation.ts client/src/store/workspace.ts REQUIRED TESTS (must add/update) malformed listProjects/verify payload does not crash continuation verification. migration retry idempotency: no duplicate target project creation. orphan cleanup behavior: only safe orphan targets cleaned. mapping persistence and workspace-open canonical resolution. watcher forbidden/auth repeated failure enters blocked/cooldown and avoids retry storm. stream terminal dedupe/idempotency for duplicate/out-of-order terminal events. large prompt path: request succeeds or deterministic timeout/error (no indefinite pending UI). useChat retryFromIndex regression + input responsiveness under transient failure. If test scripts/harness are insufficient, add minimal robust scripts without breaking existing workflows. VALIDATION COMMANDS (must run and report output summary) bun run typecheck (add script if missing) bun run build bun test (or equivalent test command you add) COMMIT + DELIVERY REQUIREMENTS Use logical commit chunks (not one giant commit). Return: exact files changed, concrete before->after behavior per defect family, tests added and what each proves, typecheck/build/test output summary, remaining backlog by severity (P0/P1/P2) with next tranche recommendation. FAIL CONDITIONS (automatic task failure) Plan/spec-only response. Docs-only changes. No tests for key regressions. No validation command results. Large-prompt stall not addressed. Execution note: Use existing docs as requirements input, but implementation evidence is the only success criteria. Additional context for retry: Continue from existing branch/PR commits and finish implementation. Do not restart from scratch. Hard priority order: Resolve all current type/build breakages (reported 200+). Complete missing P0 fixes (large-prompt no-response, continuation idempotency/orphan safety, stream terminal idempotency, watcher forbidden-loop containment). Complete targeted dashboard/workspace/dialog reliability polish and remove noisy debug logging. Add/repair regression tests and make validation green. Commit behavior required: Keep committing incrementally on the same branch with logical commit groups. If any command fails, fix and recommit until green. No docs-only output. Mandatory final proof: Exact outputs for bun run typecheck, bun run build, bun test. File list + before/after behavior + remaining P0/P1 backlog if any.
+Failed
+It didnt finish and there was so many issues in the code and abuild check, 200+. THINK HARD, TAKE THIS PROBLEM SERIOUSLY, MAKE NO COMRPIMISES, MAKE THIS PERFECT, ETC.    
+Fetched tasks
+Found 1 task
+Retrieved task details
+Found task with 1 run
+Retry task
+Review the task to continue
+Task
+Implement no-compromise reliability tranche
+
+IMPLEMENTATION TASK — THIS IS A CODING RUN, NOT A SPEC/PLAN RUN.
+
+You must implement real server+client code changes immediately. Do not return docs-only or planning-only output.
+
+Context (must use):
+
+    Repo already contains docs/tranche-execution-plan.md, docs/release-gates.md, docs/rollback-runbook.md.
+    Previous attempts produced planning artifacts and partial fixes, but the system is still broken/incomplete.
+    User-reported live regressions include:
+        continuation retries can create duplicate/orphan target projects,
+        many unresolved errors remain,
+        dashboard/workspace UX quality is poor,
+        when sending larger prompts, AI sometimes never responds,
+        noisy debug logs appear in user-facing runtime paths.
+
+PRIMARY MISSION (this run) Deliver a high-impact P0/P1 reliability implementation tranche that turns the existing plan docs into working code and closes the most damaging runtime failures.
+
+NON-NEGOTIABLE RULES
+
+    No plan/spec-only response.
+    No markdown-only work.
+    Implement code + tests + validation commands.
+    Prioritize correctness, determinism, and crash-proofing over cosmetic churn.
+    If full scope cannot finish, ship fully-complete P0/P1 subset with evidence and explicit remaining backlog.
+
+MANDATORY IMPLEMENTATION SCOPE A) Runtime contract hardening at trust boundaries
+
+    Add/finish runtime validators for untrusted CLI/API/WS payloads.
+    Eliminate unsafe nested payload access patterns in critical routes/hot paths.
+    Normalize all critical failure paths to stable machine-readable error envelopes.
+    Touch at minimum:
+        server/cli/wrapper.ts
+        server/routes/projects.ts
+        server/routes/continuation.ts
+        server/routes/chat.ts
+        server/routes/auth.ts
+        client/src/lib/api.ts
+
+B) Deterministic continuation/migration with source preservation
+
+    Make continuation idempotent and safe on retries.
+    Reuse existing target project if migration already created one.
+    Prevent duplicate target creation across retries/races.
+    Clean up true orphan targets only when safe.
+    Persist and honor oldProjectId -> newProjectId mapping.
+    Workspace-open path must resolve mapping deterministically.
+    Guarantee source preservation on partial/incomplete failure paths.
+    Ensure migration status is explicit and queryable by UI.
+    Touch at minimum:
+        server/continuation/orchestrator.ts
+        server/state/migrations.ts
+        server/state/db.ts
+        server/routes/continuation.ts
+        server/routes/projects.ts
+
+C) Watcher/SSH forbidden-loop containment
+
+    Implement/enforce watcher lifecycle with blocked/cooldown semantics and bounded retries.
+    Stop repeated forbidden/auth storm loops.
+    Ensure stale watcher teardown and migration remap correctness.
+    Align SSH acquire/retry logic with singleflight or equivalent lock to avoid thundering-herd reconnect.
+    Touch at minimum:
+        server/ssh/watcher.ts
+        server/ssh/manager.ts
+
+D) Chat stream exactly-once terminal semantics + large prompt reliability
+
+    Fix stream terminal race/duplication paths (complete/cut_off/empty/error/aborted) so finalization is idempotent.
+    Prevent duplicate terminal handling from stop/abort and async completion races.
+    Harden client terminal event handling for duplicate/out-of-order events.
+    FIX THE USER-REPORTED “large prompt gets no response” issue:
+        investigate and patch server/client flow so large prompts either stream normally or fail fast with explicit recoverable error,
+        ensure UI never gets stuck indefinitely waiting,
+        add timeout/error transition and clear retry path,
+        preserve input responsiveness.
+    Touch at minimum:
+        server/routes/chat.ts
+        server/state/streams.ts
+        server/ws/hub.ts (if needed)
+        client/src/hooks/useProjectEvents.ts
+        client/src/store/chat.ts
+        client/src/hooks/useChat.ts
+
+E) UI reliability + quality pass (dashboard/workspace/dialogs)
+
+    Remove noisy debug logging from user-facing flows (guard behind debug flag or remove).
+    Unify loading/error/retry/migration states in workspace/continuation/key-recovery/chat surfaces.
+    Replace fake progress with real backend status.
+    Improve dashboard/workspace UX polish for clarity (state badges, spacing/visual hierarchy, error affordances), while keeping scope focused on reliability-critical UX.
+    Touch at minimum:
+        client/src/pages/Dashboard.tsx
+        client/src/pages/Workspace.tsx
+        client/src/components/dialogs/ContinuationDialog.tsx
+        client/src/components/dialogs/KeyRecoveryDialog.tsx
+        client/src/components/workspace/ChatPanel.tsx
+        client/src/store/projects.ts
+        client/src/store/continuation.ts
+        client/src/store/workspace.ts
+
+REQUIRED TESTS (must add/update)
+
+    malformed listProjects/verify payload does not crash continuation verification.
+    migration retry idempotency: no duplicate target project creation.
+    orphan cleanup behavior: only safe orphan targets cleaned.
+    mapping persistence and workspace-open canonical resolution.
+    watcher forbidden/auth repeated failure enters blocked/cooldown and avoids retry storm.
+    stream terminal dedupe/idempotency for duplicate/out-of-order terminal events.
+    large prompt path: request succeeds or deterministic timeout/error (no indefinite pending UI).
+    useChat retryFromIndex regression + input responsiveness under transient failure.
+
+If test scripts/harness are insufficient, add minimal robust scripts without breaking existing workflows.
+
+VALIDATION COMMANDS (must run and report output summary)
+
+    bun run typecheck (add script if missing)
+    bun run build
+    bun test (or equivalent test command you add)
+
+COMMIT + DELIVERY REQUIREMENTS
+
+    Use logical commit chunks (not one giant commit).
+    Return:
+        exact files changed,
+        concrete before->after behavior per defect family,
+        tests added and what each proves,
+        typecheck/build/test output summary,
+        remaining backlog by severity (P0/P1/P2) with next tranche recommendation.
+
+FAIL CONDITIONS (automatic task failure)
+
+    Plan/spec-only response.
+    Docs-only changes.
+    No tests for key regressions.
+    No validation command results.
+    Large-prompt stall not addressed.
+
+Execution note: Use existing docs as requirements input, but implementation evidence is the only success criteria.
+
+Additional context for retry: NO-COMPROMISE RETRY — IMPLEMENTATION ONLY (NOT PLAN/DOCS).
+
+The previous attempt is incomplete and user reports 200+ build/type issues and broken UX/behavior. Continue on the same branch/PR and finish with production-grade quality.
+
+CRITICAL DIRECTIVES
+
+    First achieve a clean engineering baseline: eliminate TypeScript/build breakage before additional refactors.
+    Then complete highest-impact P0/P1 reliability defects end-to-end.
+    Do not stop until typecheck/build/tests are green OR provide a precise blocker list with exact failing files/lines and why they are external/unresolvable.
+    No speculative claims. Evidence only.
+
+PHASED EXECUTION (MANDATORY) Phase 1 — Stabilize compile/build baseline
+
+    Run: bun run typecheck, bun run build, bun test.
+    Collect full error inventory; fix all introduced regressions and legacy blockers in touched paths.
+    Remove tsconfig anti-pattern workarounds that mask real issues unless justified.
+    Ensure Bun/TS config is correct and consistent with project conventions.
+
+Phase 2 — Complete P0 reliability fixes A) Continuation/migration idempotency + orphan handling
+
+    Ensure retries reuse existing target project and are race-safe.
+    Ensure orphan cleanup is safe and cannot delete active/canonical targets.
+    Ensure source-preservation on partial migration failures.
+    Ensure mapping/canonical resolution is persisted and respected by workspace open.
+
+B) Runtime contract hardening
+
+    Guard untrusted CLI/API payloads; remove unsafe nested access in critical routes.
+    Standardize machine-readable error envelope/codes in critical paths.
+
+C) Chat large-prompt no-response bug
+
+    Root-cause and patch the “large prompt hangs/no assistant response” path.
+    Add deterministic timeout/error transition (no indefinite pending UI).
+    Preserve responsive input state and clear retry affordance.
+
+D) Stream exactly-once terminal semantics
+
+    Deduplicate/out-of-order terminal events server+client.
+    Enforce terminal idempotency across complete/cut_off/empty/error/aborted.
+
+E) Watcher/SSH containment
+
+    Enforce blocked/cooldown/bounded retry behavior for repeated forbidden/auth failures.
+    Prevent retry storms and stale watcher leakage.
+
+Phase 3 — UX quality/reliability cleanup
+
+    Remove noisy debug logs from user-facing runtime paths (Dashboard/Workspace/ChatPanel/dialog/store spam).
+    Improve dashboard/workspace state clarity for loading/error/retry/migration.
+    Replace fake progress with real migration status from backend.
+
+REQUIRED TESTS (must be added/updated)
+
+    malformed listProjects/verify payload doesn’t crash continuation verification.
+    migration retry idempotency (no duplicate target creation) + safe orphan cleanup.
+    mapping persistence + canonical resolution on workspace open.
+    watcher forbidden/auth loop containment (blocked/cooldown).
+    stream terminal dedupe for duplicate/out-of-order terminal events.
+    large-prompt no-response regression test (server/client path).
+    useChat retryFromIndex + responsive input regression.
+
+VALIDATION GATES (hard requirement)
+
+    bun run typecheck
+    bun run build
+    bun test Include exact output summary and failing lines if any remain.
+
+DELIVERY FORMAT
+
+    Exact files changed
+    Before -> after behavior by defect family
+    Tests added and what each proves
+    Validation command outputs
+    Remaining backlog by P0/P1/P2 with concrete next tranche
+
+FAIL THE RETRY if:
+
+    docs/spec-only output,
+    no large-prompt hang fix,
+    no green validation evidence,
+    or hand-wavy claims without reproducible proof.
+
+Continue chatting to make changes
+
+You’re absolutely right — I took this seriously and issued a no-compromise retry on the same task with stricter execution gates.
+✅ I have launched a retry plan for:
+
+    Task: 20a60380-49cf-435e-ac60-e16a1351fc8d
+    Project: rn786cng (Vibecodeplus)
+    PR branch in flight: cto/implement-runtime-hardening-and-miales (PR #6)
+
+What I tightened (hard requirements)
+
+    Phase 1 first: fix the 200+ type/build errors before anything else.
+    Must run and report:
+        bun run typecheck
+        bun run build
+        bun test
+    Must fix the large prompt hangs/no response issue (no indefinite UI pending).
+    Must complete continuation idempotency + orphan safety + mapping correctness.
+    Must enforce stream exactly-once terminal behavior and watcher/SSH loop containment.
+    Must remove noisy debug logs and clean up dashboard/workspace reliability UX.
+    Must include tests proving each regression class.
+
+Please approve/run the retry in the UI now. Once it completes, I’ll audit the output against your no-compromise standard line-by-line.
+i want it to continue its commit. THINK HARD, TAKE THIS PROBLEM SERIOUSLY, MAKE NO COMRPIMISES, MAKE THIS PERFECT, ETC.    
+Fetched tasks
+Found 1 task
+Retry task
+Review the task to continue
+Task
+Implement no-compromise reliability tranche
+
+IMPLEMENTATION TASK — THIS IS A CODING RUN, NOT A SPEC/PLAN RUN.
+
+You must implement real server+client code changes immediately. Do not return docs-only or planning-only output.
+
+Context (must use):
+
+    Repo already contains docs/tranche-execution-plan.md, docs/release-gates.md, docs/rollback-runbook.md.
+    Previous attempts produced planning artifacts and partial fixes, but the system is still broken/incomplete.
+    User-reported live regressions include:
+        continuation retries can create duplicate/orphan target projects,
+        many unresolved errors remain,
+        dashboard/workspace UX quality is poor,
+        when sending larger prompts, AI sometimes never responds,
+        noisy debug logs appear in user-facing runtime paths.
+
+PRIMARY MISSION (this run) Deliver a high-impact P0/P1 reliability implementation tranche that turns the existing plan docs into working code and closes the most damaging runtime failures.
+
+NON-NEGOTIABLE RULES
+
+    No plan/spec-only response.
+    No markdown-only work.
+    Implement code + tests + validation commands.
+    Prioritize correctness, determinism, and crash-proofing over cosmetic churn.
+    If full scope cannot finish, ship fully-complete P0/P1 subset with evidence and explicit remaining backlog.
+
+MANDATORY IMPLEMENTATION SCOPE A) Runtime contract hardening at trust boundaries
+
+    Add/finish runtime validators for untrusted CLI/API/WS payloads.
+    Eliminate unsafe nested payload access patterns in critical routes/hot paths.
+    Normalize all critical failure paths to stable machine-readable error envelopes.
+    Touch at minimum:
+        server/cli/wrapper.ts
+        server/routes/projects.ts
+        server/routes/continuation.ts
+        server/routes/chat.ts
+        server/routes/auth.ts
+        client/src/lib/api.ts
+
+B) Deterministic continuation/migration with source preservation
+
+    Make continuation idempotent and safe on retries.
+    Reuse existing target project if migration already created one.
+    Prevent duplicate target creation across retries/races.
+    Clean up true orphan targets only when safe.
+    Persist and honor oldProjectId -> newProjectId mapping.
+    Workspace-open path must resolve mapping deterministically.
+    Guarantee source preservation on partial/incomplete failure paths.
+    Ensure migration status is explicit and queryable by UI.
+    Touch at minimum:
+        server/continuation/orchestrator.ts
+        server/state/migrations.ts
+        server/state/db.ts
+        server/routes/continuation.ts
+        server/routes/projects.ts
+
+C) Watcher/SSH forbidden-loop containment
+
+    Implement/enforce watcher lifecycle with blocked/cooldown semantics and bounded retries.
+    Stop repeated forbidden/auth storm loops.
+    Ensure stale watcher teardown and migration remap correctness.
+    Align SSH acquire/retry logic with singleflight or equivalent lock to avoid thundering-herd reconnect.
+    Touch at minimum:
+        server/ssh/watcher.ts
+        server/ssh/manager.ts
+
+D) Chat stream exactly-once terminal semantics + large prompt reliability
+
+    Fix stream terminal race/duplication paths (complete/cut_off/empty/error/aborted) so finalization is idempotent.
+    Prevent duplicate terminal handling from stop/abort and async completion races.
+    Harden client terminal event handling for duplicate/out-of-order events.
+    FIX THE USER-REPORTED “large prompt gets no response” issue:
+        investigate and patch server/client flow so large prompts either stream normally or fail fast with explicit recoverable error,
+        ensure UI never gets stuck indefinitely waiting,
+        add timeout/error transition and clear retry path,
+        preserve input responsiveness.
+    Touch at minimum:
+        server/routes/chat.ts
+        server/state/streams.ts
+        server/ws/hub.ts (if needed)
+        client/src/hooks/useProjectEvents.ts
+        client/src/store/chat.ts
+        client/src/hooks/useChat.ts
+
+E) UI reliability + quality pass (dashboard/workspace/dialogs)
+
+    Remove noisy debug logging from user-facing flows (guard behind debug flag or remove).
+    Unify loading/error/retry/migration states in workspace/continuation/key-recovery/chat surfaces.
+    Replace fake progress with real backend status.
+    Improve dashboard/workspace UX polish for clarity (state badges, spacing/visual hierarchy, error affordances), while keeping scope focused on reliability-critical UX.
+    Touch at minimum:
+        client/src/pages/Dashboard.tsx
+        client/src/pages/Workspace.tsx
+        client/src/components/dialogs/ContinuationDialog.tsx
+        client/src/components/dialogs/KeyRecoveryDialog.tsx
+        client/src/components/workspace/ChatPanel.tsx
+        client/src/store/projects.ts
+        client/src/store/continuation.ts
+        client/src/store/workspace.ts
+
+REQUIRED TESTS (must add/update)
+
+    malformed listProjects/verify payload does not crash continuation verification.
+    migration retry idempotency: no duplicate target project creation.
+    orphan cleanup behavior: only safe orphan targets cleaned.
+    mapping persistence and workspace-open canonical resolution.
+    watcher forbidden/auth repeated failure enters blocked/cooldown and avoids retry storm.
+    stream terminal dedupe/idempotency for duplicate/out-of-order terminal events.
+    large prompt path: request succeeds or deterministic timeout/error (no indefinite pending UI).
+    useChat retryFromIndex regression + input responsiveness under transient failure.
+
+If test scripts/harness are insufficient, add minimal robust scripts without breaking existing workflows.
+
+VALIDATION COMMANDS (must run and report output summary)
+
+    bun run typecheck (add script if missing)
+    bun run build
+    bun test (or equivalent test command you add)
+
+COMMIT + DELIVERY REQUIREMENTS
+
+    Use logical commit chunks (not one giant commit).
+    Return:
+        exact files changed,
+        concrete before->after behavior per defect family,
+        tests added and what each proves,
+        typecheck/build/test output summary,
+        remaining backlog by severity (P0/P1/P2) with next tranche recommendation.
+
+FAIL CONDITIONS (automatic task failure)
+
+    Plan/spec-only response.
+    Docs-only changes.
+    No tests for key regressions.
+    No validation command results.
+    Large-prompt stall not addressed.
+
+Execution note: Use existing docs as requirements input, but implementation evidence is the only success criteria.
+
+Additional context for retry: Continue from existing branch/PR commits and finish implementation. Do not restart from scratch.
+
+Hard priority order:
+
+    Resolve all current type/build breakages (reported 200+).
+    Complete missing P0 fixes (large-prompt no-response, continuation idempotency/orphan safety, stream terminal idempotency, watcher forbidden-loop containment).
+    Complete targeted dashboard/workspace/dialog reliability polish and remove noisy debug logging.
+    Add/repair regression tests and make validation green.
+
+Commit behavior required:
+
+    Keep committing incrementally on the same branch with logical commit groups.
+    If any command fails, fix and recommit until green.
+    No docs-only output.
+
+Mandatory final proof:
+
+    Exact outputs for bun run typecheck, bun run build, bun test.
+    File list + before/after behavior + remaining P0/P1 backlog if any.
+
+Continue chatting to make changes
+
+Done — I’ve now re-queued the task to continue on the same existing branch/PR commits (not restart), with strict instructions to finish the implementation and get the build/typecheck/test baseline clean first.
+
+Please click Run task in the UI for task 20a60380-49cf-435e-ac60-e16a1351fc8d (PR #6). Once it runs, I’ll immediately audit the result against your no-compromise bar.
+NO, ACTUALLY INVESTAGE THE CODEBASE OF ITS COMMIT
+Ran 10 commands
+Pressed ctrl+c
+Finished working
+Ran 4 commands
+cd /home/engine/project/Vibecodeplus && git diff --name-only master...HEAD
+Finished working
+Ran 3 commands
+Pressed ctrl+c
+Finished working
+Ran 4 commands
+cd /home/engine/project/Vibecodeplus && git diff master...HEAD -- server/continuation/orchestrator.ts | sed -n '1,260p'
+
+You’re right — I actually investigated the commit codebase (not just task text).
+
+I pulled and reviewed PR #6 branch commit:
+
+    Commit: c7f05b0
+    Branch: cto/implement-runtime-hardening-and-miales
+    Delta: 27 files changed, +704 / -136
+
+What I found (serious, concrete)
+1) This commit is incomplete vs your requirements
+
+    No tests were added (zero tests/**, .test.*, .spec.* changes).
+    No evidence in code of completed validation gates (typecheck/build/test outputs are not in commit).
+
+2) Continuation/orphan logic is only partially fixed
+
+In server/continuation/orchestrator.ts:
+
+    It reuses target IDs on retry (good).
+    But orphan cleanup is only local cleanup when remote target is already missing.
+    It does not robustly clean real remote orphan targets created in prior failed runs (your reported issue).
+
+3) Different-key detection can still misclassify failures
+
+In server/routes/projects.ts workspace open flow:
+
+    On acquire failure, it does listProjects().
+    If listProjects fails (remote.ok === false), code can still fall into differentKey: true path.
+    That can mislabel transient/auth/network failures as key-mismatch migration state.
+
+4) Large-prompt hang got partial mitigation, not full proof
+
+    server/routes/chat.ts now has idle/hard timeouts.
+    client/src/hooks/useChat.ts adds a watchdog.
+    But there are no regression tests proving “no indefinite pending” for large prompts and no proof from validation output.
+
+5) Stream reliability improved, but not fully production-proven
+
+    Stream IDs / sequence / terminal handling improved (chat.ts, streams.ts, useProjectEvents.ts, chat store).
+    But stream_fsm_v2 flag exists yet isn’t meaningfully wired as a full fallback path.
+    Again: no tests to prove duplicate/out-of-order terminal race closure.
+
+6) UX quality complaint is valid
+
+    Dashboard/workspace were touched, but your “still looks bad” feedback is consistent: this is not a comprehensive polish pass.
+    Also still has brittle global state like window.__agentUrl in Workspace.tsx.
+
+Build/check reality from investigation
+
+I attempted local checks on this commit; environment blockers appeared:
+
+    bun run typecheck fails immediately because tsc wasn’t available in this sandbox install state.
+    bun build server/index.ts failed on unresolved native cpufeatures.node dependency in this environment.
+
+So I can’t claim green checks from this commit.
+Given your no-compromise standard, this commit is not acceptable as final.
+
+If you want, I’ll now issue a surgical continuation task using this exact defect list (file-by-file) so the agent continues the same PR and fixes these concrete gaps first (compile baseline, orphan handling correctness, misclassification logic, large-prompt deterministic tests, and full validation proof).**
