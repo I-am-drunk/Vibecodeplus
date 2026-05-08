@@ -12,6 +12,8 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["bun-types"],
     "paths": { "@/*": ["./client/src/*"] }
   },
   "include": ["client/src", "server", "bin"],

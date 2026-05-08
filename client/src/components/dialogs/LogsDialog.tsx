@@ -34,7 +34,8 @@ export function LogsDialog({ onClose }: { onClose: () => void }) {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    return onLogsChange(() => setEntries([...getLogs()]))
+    const unsub = onLogsChange(() => setEntries([...getLogs()]))
+    return () => { unsub() }
   }, [])
 
   useEffect(() => {

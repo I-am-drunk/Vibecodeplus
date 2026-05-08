@@ -83,7 +83,7 @@ export function jsonError(c: Context, error: unknown, fallbackStatus = 500) {
         details: appError.details,
       },
     } satisfies ErrorEnvelope,
-    appError.status,
+    appError.status as any,
   )
 }
 

@@ -11,7 +11,7 @@ settingsRouter.get('/', (c) => {
 })
 
 async function updateSettings(c: any) {
-  const body = await c.req.json<Record<string, unknown>>()
+  const body = (await c.req.json()) as Record<string, unknown>
   log.info({ keys: Object.keys(body) }, 'updating settings')
 
   const result = updateConfig(body)
