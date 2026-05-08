@@ -17,13 +17,13 @@ const { values } = parseArgs({
 })
 
 if (values.version) {
-  console.log('vibecode-studio v1.0.0')
+  console.log('vibecode-studio v0.1.0')
   process.exit(0)
 }
 
 if (values.help) {
   console.log(`
-  Vibecode Studio v1.0.0
+  Vibecode Studio v0.1.0
 
   Usage: vibecode-studio [options]
 

@@ -77,7 +77,7 @@ app.route('/api/terminal', terminalRouter)
 app.route('/api/settings', settingsRouter)
 app.route('/api/continuation', continuationRouter)
 
-app.get('/api/health', (c) => c.json({ ok: true, version: '1.0.0' }))
+app.get('/api/health', (c) => c.json({ ok: true, version: '0.1.0' }))
 
 if (!isDev) {
   const distPath = path.resolve(process.cwd(), 'dist', 'client')
