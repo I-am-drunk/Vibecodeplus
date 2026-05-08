@@ -110,14 +110,14 @@ function mapAliasRow(row: any): ProjectAliasRecord {
   }
 }
 
-export function createProjectMigration(sourceProjectId: string, dbInput?: Database): ProjectMigrationRecord {
+export function createProjectMigration(sourceProjectId: string, targetProjectId?: string | null, dbInput?: Database): ProjectMigrationRecord {
   const db = dbOrDefault(dbInput)
   const id = crypto.randomUUID()
 
   db.prepare(`
-    INSERT INTO project_migrations (id, source_project_id, status, stage, source_preserved, started_at, updated_at)
-    VALUES (?, ?, 'pending', 'queued', 1, datetime('now'), datetime('now'))
-  `).run(id, sourceProjectId)
+    INSERT INTO project_migrations (id, source_project_id, target_project_id, status, stage, source_preserved, started_at, updated_at)
+    VALUES (?, ?, ?, 'pending', 'queued', 1, datetime('now'), datetime('now'))
+  `).run(id, sourceProjectId, targetProjectId ?? null)
 
   return getProjectMigration(id, db)!
 }

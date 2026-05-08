@@ -177,16 +177,27 @@ function ProjectCard({ project, onOpen, onDelete, viewMode }: ProjectCardProps) 
           {project.description || project.defaultModel || 'No description provided.'}
         </p>
 
-        <div className="flex flex-col gap-2.5 mt-auto pt-4 border-t border-white/[0.06]">
-          <div className="flex items-center justify-between text-[11px] text-white/30 font-medium">
-            <div className="flex items-center gap-1.5"><Clock size={12} className="text-white/20"/> {project.lastOpenedAt ? formatRelative(project.lastOpenedAt) : 'Never'}</div>
-            {sessions !== null && <div className="flex items-center gap-1.5"><MessageSquare size={12} className="text-white/20"/> {sessions}</div>}
-          </div>
-          {snapshotLabel && (
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#30d158]/70 bg-[#30d158]/5 px-2 py-1.5 rounded-md border border-[#30d158]/10 w-fit">
-              <Database size={11} /> {snapshotLabel}
+        <div className="mt-auto flex flex-col gap-3">
+          <div className="flex flex-col gap-2.5 pt-4 border-t border-white/[0.06]">
+            <div className="flex items-center justify-between text-[11px] text-white/30 font-medium">
+              <div className="flex items-center gap-1.5"><Clock size={12} className="text-white/20"/> {project.lastOpenedAt ? formatRelative(project.lastOpenedAt) : 'Never'}</div>
+              {sessions !== null && <div className="flex items-center gap-1.5"><MessageSquare size={12} className="text-white/20"/> {sessions}</div>}
             </div>
-          )}
+            {snapshotLabel && (
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-[#30d158]/70 bg-[#30d158]/5 px-2 py-1.5 rounded-md border border-[#30d158]/10 w-fit">
+                <Database size={11} /> {snapshotLabel}
+              </div>
+            )}
+          </div>
+          
+          <div className="flex items-center gap-2 mt-1">
+            <div className={cn(
+              'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all w-full text-center',
+              isDiff ? 'bg-[#ff9f0a]/10 text-[#ff9f0a] hover:bg-[#ff9f0a]/20' : 'bg-[#0a84ff]/10 text-[#0a84ff] opacity-0 group-hover:opacity-100 hover:bg-[#0a84ff]/20'
+            )}>
+              {isDiff ? 'Migrate' : opening ? 'Opening...' : 'Open'}
+            </div>
+          </div>
         </div>
       </div>
     </div>

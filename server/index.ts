@@ -72,8 +72,8 @@ const isDev = process.env.NODE_ENV === 'development'
 app.use(
   '*',
   bodyLimit({
-    maxSize: 10 * 1024 * 1024,
-    onError: (c) => c.json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Payload too large' } }, 413),
+    maxSize: 50 * 1024 * 1024,
+    onError: (c) => c.json({ code: 'PAYLOAD_TOO_LARGE', message: 'Your prompt exceeds the maximum allowed size.' }, 413 as any),
   })
 )
 
