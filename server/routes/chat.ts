@@ -76,18 +76,21 @@ function ensureSession(projectId: string, model: string, prompt: string, request
   return requestedSessionId
 }
 
-function saveUserMessage(sessionId: string, prompt: string) {
+function saveUserMessage(sessionId: string, prompt: string, explicitMessageId?: string) {
   const db = getDB()
+  const messageId = explicitMessageId || crypto.randomUUID()
   db.prepare(`
     INSERT INTO messages (id, session_id, role, content, status, created_at)
     VALUES (?, ?, 'user', ?, 'complete', datetime('now'))
-  `).run(crypto.randomUUID(), sessionId, prompt)
+  `).run(messageId, sessionId, prompt)
 
   db.prepare(`
     UPDATE sessions
     SET message_count = message_count + 1, updated_at = datetime('now')
     WHERE id = ?
   `).run(sessionId)
+
+  return messageId
 }
 
 function saveAssistantMessage(
@@ -99,9 +102,64 @@ function saveAssistantMessage(
     inputTokens: number
     outputTokens: number
     toolCalls?: any[]
+    appendMessageId?: string
   },
 ) {
   const db = getDB()
+
+  if (opts.appendMessageId) {
+    let newToolCallsStr: string | null = null
+    
+    if (opts.toolCalls && opts.toolCalls.length > 0) {
+      const existingRow = db.prepare('SELECT tool_calls FROM messages WHERE id = ?').get(opts.appendMessageId) as any
+      let existingToolCalls: any[] = []
+      if (existingRow && existingRow.tool_calls) {
+        try {
+          existingToolCalls = JSON.parse(existingRow.tool_calls)
+        } catch {}
+      }
+      
+      const merged = [...existingToolCalls]
+      for (const call of opts.toolCalls) {
+        const idx = merged.findIndex(c => c.id === call.id)
+        if (idx >= 0) merged[idx] = { ...merged[idx], ...call }
+        else merged.push(call)
+      }
+      newToolCallsStr = JSON.stringify(merged)
+    }
+
+    if (newToolCallsStr) {
+      db.prepare(`
+        UPDATE messages 
+        SET 
+          content = COALESCE(content, '') || ?, 
+          status = ?, 
+          output_tokens = COALESCE(output_tokens, 0) + ?,
+          tool_calls = ?
+        WHERE id = ?
+      `).run(content, opts.status, opts.outputTokens, newToolCallsStr, opts.appendMessageId)
+    } else {
+      db.prepare(`
+        UPDATE messages 
+        SET 
+          content = COALESCE(content, '') || ?, 
+          status = ?, 
+          output_tokens = COALESCE(output_tokens, 0) + ?
+        WHERE id = ?
+      `).run(content, opts.status, opts.outputTokens, opts.appendMessageId)
+    }
+
+    db.prepare(`
+      UPDATE sessions
+      SET
+        total_input_tokens = COALESCE(total_input_tokens, 0) + ?,
+        total_output_tokens = COALESCE(total_output_tokens, 0) + ?,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(opts.inputTokens, opts.outputTokens, sessionId)
+    
+    return true
+  }
 
   const result = db.prepare(`
     INSERT OR IGNORE INTO messages
@@ -163,7 +221,18 @@ chatRouter.post('/', async (c) => {
     const model = body.model?.trim() || 'claude-sonnet-4-6'
     const sessionId = ensureSession(projectId, model, body.prompt, body.sessionId)
 
-    saveUserMessage(sessionId, body.prompt)
+    if (!body.isContinuation) {
+      const savedMessageId = saveUserMessage(sessionId, body.prompt, body.messageId)
+      hub.broadcast(`project:${projectId}`, {
+        type: 'chat:message',
+        message: {
+          id: savedMessageId,
+          role: 'user',
+          content: body.prompt,
+          createdAt: new Date().toISOString()
+        }
+      })
+    }
 
     const abortController = new AbortController()
     const stream = streamRegistry.register(sessionId, projectId, abortController)
@@ -174,6 +243,7 @@ chatRouter.post('/', async (c) => {
       sessionId,
       streamId: stream.streamId,
       sequence: startSequence,
+      appendMessageId: body.appendMessageId,
     })
 
     void runStreamLifecycle({
@@ -184,6 +254,7 @@ chatRouter.post('/', async (c) => {
       prompt: body.prompt,
       resolvedAgentUrl,
       abortController,
+      appendMessageId: body.appendMessageId,
     })
 
     return c.json(success({ sessionId, streamId: stream.streamId, canonicalProjectId: projectId }))
@@ -200,6 +271,7 @@ async function runStreamLifecycle(opts: {
   prompt: string
   resolvedAgentUrl: string
   abortController: AbortController
+  appendMessageId?: string
 }) {
   let assistantText = ''
   let inputTokens = 0
@@ -245,6 +317,13 @@ async function runStreamLifecycle(opts: {
           target.result = toolResult.content
           target.status = toolResult.is_error ? 'error' : 'success'
         }
+      }
+
+      const activeStream = streamRegistry.get(opts.sessionId)
+      if (activeStream) {
+        activeStream.buffer = assistantText
+        activeStream.toolCalls = toolCalls
+        activeStream.lastActivityAt = Date.now()
       }
 
       if (event.type === 'done') {
@@ -310,12 +389,13 @@ async function runStreamLifecycle(opts: {
 
   const acceptedTerminal = streamRegistry.markTerminal(opts.sessionId, opts.streamId, terminal)
   if (acceptedTerminal) {
-    if (assistantText || toolCalls.length > 0 || terminal !== 'empty') {
+    if (assistantText || toolCalls.length > 0 || terminal !== 'empty' || opts.appendMessageId) {
       saveAssistantMessage(opts.sessionId, opts.streamId, assistantText, {
         status: terminal,
         inputTokens,
         outputTokens,
         toolCalls,
+        appendMessageId: opts.appendMessageId,
       })
     }
 
@@ -390,6 +470,33 @@ chatRouter.get('/sessions/:id', async (c) => {
       ORDER BY created_at ASC
     `).all(sessionId) as any[]
 
+    const messages = messageRows.map((row) => ({
+      id: row.id,
+      role: row.role,
+      content: row.content,
+      createdAt: row.created_at,
+      inputTokens: row.input_tokens,
+      outputTokens: row.output_tokens,
+      status: row.status,
+      streamId: row.stream_id,
+      toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
+    }))
+
+    const activeStream = streamRegistry.get(sessionId)
+    if (activeStream) {
+      messages.push({
+        id: activeStream.streamId, // Use streamId as a temporary unique identifier
+        role: 'assistant',
+        content: activeStream.buffer,
+        createdAt: new Date().toISOString(),
+        inputTokens: 0,
+        outputTokens: 0,
+        status: 'running',
+        streamId: activeStream.streamId,
+        toolCalls: activeStream.toolCalls
+      })
+    }
+
     return c.json(
       success({
         session: {
@@ -400,16 +507,7 @@ chatRouter.get('/sessions/:id', async (c) => {
           createdAt: sessionRow.created_at,
           updatedAt: sessionRow.updated_at,
         },
-        messages: messageRows.map((row) => ({
-          id: row.id,
-          role: row.role,
-          content: row.content,
-          createdAt: row.created_at,
-          inputTokens: row.input_tokens,
-          outputTokens: row.output_tokens,
-          status: row.status,
-          streamId: row.stream_id,
-        })),
+        messages,
       }),
     )
   } catch (error) {

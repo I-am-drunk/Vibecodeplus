@@ -76,10 +76,16 @@ export function useProjectEvents(projectId: string | null) {
         const workspaceStore = useWorkspaceStore.getState()
 
         switch (event.type) {
+          case 'chat:message': {
+            chatStore.addMessage(event.message)
+            break
+          }
+
           case 'chat:stream:start': {
             const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
             const streamId = String(event.streamId || sessionId)
             const sequence = Number(event.sequence || 0)
+            const appendMessageId = event.appendMessageId ? String(event.appendMessageId) : undefined
             if (!sessionId || !streamId) break
 
             const accepted = streamGuard.start(sessionId, streamId, sequence)
@@ -87,7 +93,7 @@ export function useProjectEvents(projectId: string | null) {
 
             streamBufferById.set(streamId, '')
             chatStore.setActiveSession(sessionId)
-            chatStore.beginStream({ sessionId, streamId })
+            chatStore.beginStream({ sessionId, streamId, appendMessageId })
             break
           }
 

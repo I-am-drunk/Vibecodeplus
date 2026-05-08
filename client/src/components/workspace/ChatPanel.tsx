@@ -24,6 +24,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
     setMessages,
     setActiveSession,
     toolCalls,
+    appendingToId,
   } = useChatStore()
 
   const { sendMessage, retryFromIndex, continueMessage, loadSession } = useChat(projectId)
@@ -46,9 +47,11 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
       const { sessions } = await api.listSessions(projectId)
       setSessions(sessions)
 
-      const savedSessionId = localStorage.getItem('activeSessionId')
+      const savedSessionId = localStorage.getItem(`activeSessionId_${projectId}`)
       if (savedSessionId && sessions.some((session) => session.id === savedSessionId)) {
         await loadSession(savedSessionId)
+      } else if (sessions.length > 0) {
+        await loadSession(sessions[0].id)
       }
     } catch (error) {
       setSessionsError(error instanceof Error ? error.message : String(error))
@@ -56,6 +59,14 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
       setSessionsLoading(false)
     }
   }, [loadSession, projectId, setSessions])
+
+  useEffect(() => {
+    if (activeSessionId) {
+      localStorage.setItem(`activeSessionId_${projectId}`, activeSessionId)
+    } else {
+      localStorage.removeItem(`activeSessionId_${projectId}`)
+    }
+  }, [activeSessionId, projectId])
 
   useEffect(() => {
     void fetchSessions()
@@ -199,11 +210,16 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
               const isLastMessage = index === messages.length - 1
               const messageToolCalls = message.role === 'assistant' ? toolCalls.filter((toolCall) => toolCall.messageId === message.id) : []
               const showRetry = message.role === 'assistant' && !message.content && isLastMessage && !isStreaming
+              
+              const isAppending = isStreaming && appendingToId === message.id
+              const displayMessage = isAppending 
+                ? { ...message, content: message.content + streamingText, streaming: true }
+                : message
 
               return (
                 <div key={message.id}>
                   <MessageBubble
-                    message={message}
+                    message={displayMessage}
                     onRetry={
                       isLastUserMessage && !isStreaming
                         ? () => void retryFromIndex(index)
@@ -224,7 +240,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
               )
             })}
 
-            {isStreaming && (
+            {isStreaming && !appendingToId && (
               <div>
                 {streamingText && (
                   <MessageBubble

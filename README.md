@@ -22,6 +22,16 @@ The app is designed to run on your machine and store runtime state in user-scope
 
 ---
 
+## Core Architecture: The Continuation Logic
+
+**The continuation logic is the most important part of the whole program.**
+
+In a modern AI-assisted development environment, Large Language Models frequently encounter token limits, network timeouts, or arbitrary truncation. When an LLM is cut off, the system must never pollute the context window or the underlying database with synthetic, fake user prompts like *'Please continue your response'*.
+
+Instead, this system operates on a state-of-the-art, invisible stitching architecture. When the frontend issues a continuation flag, the backend re-invokes the model with the exact previous context. Crucially, the subsequent stream of tokens is **appended directly** to the existing database entity and seamlessly stitched into the React UI. This creates an unbroken, contiguous, magical scrolling experience for the user. The AI agent operates in a persistent background context—meaning page reloads, tab closures, and network drops never result in lost generation data. The in-memory stream registry constantly buffers output so that any reconnected client instantly synchronizes with the live generation.
+
+---
+
 ## Architecture summary
 
 ### Server layer (`server/`)

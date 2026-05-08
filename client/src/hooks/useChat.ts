@@ -21,7 +21,7 @@ export function useChat(projectId: string | null) {
   const sendingRef = useRef(false)
 
   const sendMessage = useCallback(
-    async (prompt: string, sessionId?: string | null) => {
+    async (prompt: string, sessionId?: string | null, opts?: { isContinuation?: boolean; appendMessageId?: string }) => {
       if (!projectId) return
       if (!prompt.trim()) return
       if (sendingRef.current) return
@@ -32,12 +32,14 @@ export function useChat(projectId: string | null) {
       const userMessageId = crypto.randomUUID()
       const activeSessionId = chatStore.activeSessionId
 
-      chatStore.addMessage({
-        id: userMessageId,
-        role: 'user',
-        content: prompt,
-        createdAt: new Date().toISOString(),
-      })
+      if (!opts?.isContinuation) {
+        chatStore.addMessage({
+          id: userMessageId,
+          role: 'user',
+          content: prompt,
+          createdAt: new Date().toISOString(),
+        })
+      }
       chatStore.setStreaming(true)
 
       try {
@@ -49,6 +51,9 @@ export function useChat(projectId: string | null) {
           prompt: prompt.trim(),
           sessionId: resolvedSessionId,
           agentUrl: (window as any).__agentUrl,
+          messageId: userMessageId,
+          isContinuation: opts?.isContinuation,
+          appendMessageId: opts?.appendMessageId,
         })
 
         if (response.canonicalProjectId && response.canonicalProjectId !== projectId) {
@@ -89,12 +94,11 @@ export function useChat(projectId: string | null) {
       const previousToolCalls = state.toolCalls
 
       state.setMessages(state.messages.slice(0, retryIndex))
-      state.setActiveSession(null)
       state.clearToolCalls()
       state.setStreaming(false)
 
       try {
-        await sendMessage(retryMessage.content, null)
+        await sendMessage(retryMessage.content, previousSessionId)
       } catch (error) {
         state.setMessages(previousMessages)
         state.setActiveSession(previousSessionId)
@@ -116,10 +120,10 @@ export function useChat(projectId: string | null) {
 
     const tail = last.content.slice(-300).trim()
     const continuationPrompt = tail
-      ? `Please continue your response from where you left off. Your last words were: "...${tail}"`
-      : 'Please continue your previous response from where you left off.'
+      ? `Please continue your response exactly from where you left off. Your last words were: "...${tail}"`
+      : 'Please continue...'
 
-    await sendMessage(continuationPrompt)
+    await sendMessage(continuationPrompt, state.activeSessionId, { isContinuation: true, appendMessageId: last.id })
   }, [sendMessage])
 
   const loadSession = useCallback(async (sessionId: string) => {
