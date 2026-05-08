@@ -1,3 +1,14 @@
 node_modules/
 dist/
 logs/
+coverage/
+.vite/
+.DS_Store
+*.log
+.env
+.env.*
+*.local
+*.db
+*.sqlite
+.vscode/
+.idea/
