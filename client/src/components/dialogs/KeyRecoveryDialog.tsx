@@ -46,8 +46,7 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
       }
       await refreshCredits()
       setRecovered(true)
-      onRecovered()
-      onClose()
+      setTimeout(() => { onRecovered(); onClose() }, 1200)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setError(msg.includes('zero credits') || msg.includes('ZERO_CREDITS')
@@ -62,8 +61,7 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
     setShowLowCreditsWarning(false)
     await refreshCredits()
     setRecovered(true)
-    onRecovered()
-    onClose()
+    setTimeout(() => { onRecovered(); onClose() }, 1200)
   }
 
   return (

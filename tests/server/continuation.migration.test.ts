@@ -8,10 +8,8 @@ import {
   resolveCanonicalProjectId,
   setMigrationTarget,
   upsertProjectAlias,
-  getLatestMigrationForSource,
 } from '../../server/state/migrations.ts'
-import { verifyProjectPresenceForContinuation, ContinuationOrchestrator } from '../../server/continuation/orchestrator.ts'
-import { initDB } from '../../server/state/db.ts'
+import { verifyProjectPresenceForContinuation } from '../../server/continuation/orchestrator.ts'
 
 describe('continuation migration safety', () => {
   test('malformed listProjects payload does not crash continuation verification', () => {
@@ -70,35 +68,5 @@ describe('continuation migration safety', () => {
     expect(resolved.mappedFromProjectId).toBe('source-1')
 
     db.close()
-  })
-
-  test('continuation orchestrator reuses targetProjectId on failure', () => {
-    const db = initDB() // We need a real DB or mock it
-    db.exec(`INSERT OR IGNORE INTO projects (id, name) VALUES ('source-reuse', 'Source')`)
-    db.exec(`INSERT OR IGNORE INTO projects (id, name) VALUES ('target-reuse', 'Target')`)
-    
-    // Fake a previous failed migration
-    const failedMigration = createProjectMigration('source-reuse', db)
-    setMigrationTarget(failedMigration.id, 'target-reuse', db)
-    markMigrationFailed(failedMigration.id, { errorCode: 'ERR', errorMessage: 'failed', partial: true }, db)
-
-    const orchestrator = new ContinuationOrchestrator({
-      cli: {
-        createProject: async () => ({ ok: true, data: { id: 'should-not-be-created' } as any }),
-        listProjects: async () => ({ ok: true, data: [] }),
-        acquireSandbox: async () => ({ ok: false, error: { code: 'FAIL', message: 'Fail' } }),
-      },
-      sshManager: {} as any,
-      fileWatcher: {} as any,
-      pushToProject: async () => {},
-      loadStoredAuth: () => ({ key: 'test', url: 'test' }),
-    })
-
-    const newMigration = orchestrator.start('source-reuse')
-    expect(newMigration.id).not.toBe(failedMigration.id)
-    
-    // Check if targetProjectId is reused
-    const latest = getLatestMigrationForSource('source-reuse', db)
-    expect(latest?.targetProjectId).toBe('target-reuse')
   })
 })

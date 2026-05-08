@@ -6,7 +6,7 @@ import { featureFlags } from '../lib/flags.ts'
 type FileChange = { path: string; action: 'created' | 'modified' | 'deleted' }
 type ChangeHandler = (projectId: string, changes: FileChange[]) => void
 
-export type WatcherStatus = 'idle' | 'running' | 'blocked_forbidden' | 'cooldown' | 'stopped'
+export type WatcherStatus = 'running' | 'blocked' | 'cooldown' | 'stopped'
 
 type WatcherContext = {
   projectId: string
@@ -46,7 +46,7 @@ export class FileChangeWatcher {
 
   start(projectId: string, pollMs = DEFAULT_POLL_MS) {
     const existing = this.contexts.get(projectId)
-    if (existing?.state === 'running' || existing?.state === 'cooldown' || existing?.state === 'blocked_forbidden') {
+    if (existing?.state === 'running' || existing?.state === 'cooldown' || existing?.state === 'blocked') {
       return
     }
 
@@ -182,12 +182,9 @@ export class FileChangeWatcher {
 
     context.forbiddenFailures += 1
     context.lastError = message
-    context.state = 'blocked_forbidden'
+    context.state = 'blocked'
 
-    // Bounded backoff with jitter
-    const baseCooldown = Math.min(BASE_COOLDOWN_MS * 2 ** (context.forbiddenFailures - 1), MAX_COOLDOWN_MS)
-    const jitter = Math.random() * 2000 // 0-2s jitter
-    const cooldownMs = baseCooldown + jitter
+    const cooldownMs = Math.min(BASE_COOLDOWN_MS * 2 ** (context.forbiddenFailures - 1), MAX_COOLDOWN_MS)
     context.cooldownMs = cooldownMs
 
     this.logCompact(projectId, `blocked:${context.forbiddenFailures}:${message}`, {

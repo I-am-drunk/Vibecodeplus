@@ -9,7 +9,6 @@ import {
   parseAgentStreamEvent,
   parseCliProjectsPayload,
   parseCliUserPayload,
-  parseCreateProjectPayload,
 } from '../contracts/cli.ts'
 
 const log = createLogger('cli')
@@ -284,11 +283,11 @@ export class VibecodeCliWrapper {
     const platform = opts?.template || 'webapp'
     const description = opts?.description || name
 
-    const result = await this.runJSON<unknown>(['projects', 'create', platform, description])
+    const result = await this.runJSON<any>(['projects', 'create', platform, description])
     if (!result.ok) return result
 
-    const parsed = parseCreateProjectPayload(result.data)
-    if (!parsed) {
+    const id = result.data?.projectId ?? result.data?.id
+    if (!id) {
       return {
         ok: false,
         error: {
@@ -301,7 +300,7 @@ export class VibecodeCliWrapper {
     return {
       ok: true,
       data: {
-        id: parsed.id,
+        id: String(id),
         name,
         description,
         created_at: new Date().toISOString(),
@@ -370,22 +369,10 @@ export class VibecodeCliWrapper {
     })
   }
 
-  async *agentSend(agentUrl: string, model: string, prompt: string, opts?: { signal?: AbortSignal }) {
-    const { mkdtemp, writeFile, rm } = await import('fs/promises')
-    const { join } = await import('path')
-    const { tmpdir } = await import('os')
-    
-    const tempDir = await mkdtemp(join(tmpdir(), 'vibecode-prompt-'))
-    const promptPath = join(tempDir, 'prompt.txt')
-    await writeFile(promptPath, prompt, 'utf-8')
-
-    try {
-      yield* this.runStream(['agent', 'send', '--model', model, '--output', 'json', '--prompt-file', promptPath, agentUrl], {
-        signal: opts?.signal,
-      })
-    } finally {
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {})
-    }
+  agentSend(agentUrl: string, model: string, prompt: string, opts?: { signal?: AbortSignal }) {
+    return this.runStream(['agent', 'send', '--model', model, '--output', 'json', agentUrl, prompt], {
+      signal: opts?.signal,
+    })
   }
 
   async agentStop(agentUrl: string): Promise<CLIResult<{ stopped: boolean }>> {

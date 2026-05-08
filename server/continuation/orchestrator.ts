@@ -112,12 +112,6 @@ export class ContinuationOrchestrator {
     }
 
     const migration = createProjectMigration(sourceProjectId)
-    
-    // REUSE TARGET: If previous failed but had a target, reuse it to prevent orphan clones
-    if (latest && (latest.status === 'failed' || latest.status === 'partial_failed') && latest.targetProjectId) {
-      setMigrationTarget(migration.id, latest.targetProjectId)
-    }
-
     this.ensureExecution(sourceProjectId, migration.id)
     return migration
   }
@@ -183,45 +177,40 @@ export class ContinuationOrchestrator {
     const continuationName = source.name || 'Continued Project'
     const continuationDescription = source.description || continuationName
 
-    const currentMigration = getProjectMigration(migrationId)
-    let targetProjectId = currentMigration?.targetProjectId
+    setMigrationStage(migrationId, 'creating_target', 'Creating destination project')
+    const createResult = await this.deps.cli.createProject(continuationName, {
+      description: continuationDescription,
+    })
 
-    if (!targetProjectId) {
-      setMigrationStage(migrationId, 'creating_target', 'Creating destination project')
-      const createResult = await this.deps.cli.createProject(continuationName, {
-        description: continuationDescription,
+    if (!createResult.ok) {
+      return markMigrationFailed(migrationId, {
+        errorCode: `CREATE_TARGET_${createResult.error.code}`,
+        errorMessage: createResult.error.message || 'Failed to create continuation project',
+        stage: 'failed',
+        partial: false,
+        sourcePreserved: true,
       })
-
-      if (!createResult.ok) {
-        return markMigrationFailed(migrationId, {
-          errorCode: `CREATE_TARGET_${createResult.error.code}`,
-          errorMessage: createResult.error.message || 'Failed to create continuation project',
-          stage: 'failed',
-          partial: false,
-          sourcePreserved: true,
-        })
-      }
-
-      targetProjectId = createResult.data.id
-      setMigrationTarget(migrationId, targetProjectId)
-
-      db.prepare(`
-        INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET
-          name = excluded.name,
-          description = excluded.description,
-          default_model = excluded.default_model,
-          api_key_hash = excluded.api_key_hash,
-          updated_at = datetime('now')
-      `).run(
-        targetProjectId,
-        continuationName,
-        continuationDescription,
-        source.default_model || 'claude-sonnet-4-6',
-        hashKey(auth.key),
-      )
     }
+
+    const targetProjectId = createResult.data.id
+    setMigrationTarget(migrationId, targetProjectId)
+
+    db.prepare(`
+      INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        description = excluded.description,
+        default_model = excluded.default_model,
+        api_key_hash = excluded.api_key_hash,
+        updated_at = datetime('now')
+    `).run(
+      targetProjectId,
+      continuationName,
+      continuationDescription,
+      source.default_model || 'claude-sonnet-4-6',
+      hashKey(auth.key),
+    )
 
     setMigrationStage(migrationId, 'acquiring_target', 'Acquiring sandbox for destination project')
 

@@ -258,9 +258,8 @@ export function parseAgentStopPayload(payload: unknown): { stopped: boolean } | 
   return { stopped: true }
 }
 
-export function parseCreateProjectPayload(payload: unknown): { id: string } | null {
-  if (!isRecord(payload)) return null
-  const id = asString(payload.projectId ?? payload.id)
-  if (!id) return null
-  return { id }
+export function projectExistsInListPayload(payload: unknown, projectId: string): boolean {
+  const parsed = parseCliProjectsPayload(payload)
+  if (!parsed) return false
+  return parsed.some((project) => project.id === projectId)
 }
