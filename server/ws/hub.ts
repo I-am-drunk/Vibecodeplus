@@ -3,6 +3,13 @@ export type WSMessage =
   | { type: 'unsubscribe'; channels: string[] }
   | { type: 'ping' }
 
+function normalizeChannels(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+    .filter(Boolean)
+}
+
 class WebSocketHub {
   private clients = new Set<WebSocket>()
   private channelSubscriptions = new Map<string, Set<WebSocket>>()
@@ -87,10 +94,20 @@ class WebSocketHub {
 
   handleMessage(ws: WebSocket, raw: string) {
     try {
-      const msg = JSON.parse(raw) as WSMessage
-      if (msg.type === 'subscribe') this.subscribe(ws, msg.channels)
-      if (msg.type === 'unsubscribe') this.unsubscribe(ws, msg.channels)
-      if (msg.type === 'ping' && ws.readyState === WebSocket.OPEN) {
+      const msg = JSON.parse(raw) as Record<string, unknown>
+      const type = typeof msg.type === 'string' ? msg.type : ''
+
+      if (type === 'subscribe') {
+        const channels = normalizeChannels(msg.channels)
+        if (channels.length > 0) this.subscribe(ws, channels)
+      }
+
+      if (type === 'unsubscribe') {
+        const channels = normalizeChannels(msg.channels)
+        if (channels.length > 0) this.unsubscribe(ws, channels)
+      }
+
+      if (type === 'ping' && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'pong' }))
       }
     } catch {

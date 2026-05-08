@@ -42,18 +42,12 @@ await cli.resolveBinary()
   if (auth?.key) {
     const result = await cli.listProjects()
     if (result.ok) {
-      const remoteIds = new Set(result.data.map((project: any) => project.id))
+      const remoteIds = new Set(result.data.map((project) => project.id))
       const local = getDB().prepare('SELECT id FROM projects').all() as { id: string }[]
-
-      let cleaned = 0
-      for (const { id } of local) {
-        if (!remoteIds.has(id)) {
-          getDB().prepare('DELETE FROM projects WHERE id = ?').run(id)
-          cleaned += 1
-        }
+      const missing = local.filter(({ id }) => !remoteIds.has(id)).length
+      if (missing > 0) {
+        console.log(`[server] retained ${missing} local projects that are missing remotely (preservation mode)`)
       }
-
-      if (cleaned > 0) console.log(`[server] cleaned up ${cleaned} orphaned projects not in remote`)
     }
   }
 }

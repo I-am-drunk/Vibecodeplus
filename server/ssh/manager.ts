@@ -24,9 +24,9 @@ const MAX_CONSECUTIVE_FAILURES = 3
 const BACKOFF_WINDOW_MS = 5 * 60 * 1000
 
 function normalizeSandboxCredentials(input: SandboxCredentials | Record<string, unknown>): NormalizedCredentials {
-  const host = String((input as any).host ?? (input as any).ipv4 ?? '')
+  const host = String((input as any).host ?? (input as any).ipv4 ?? '').trim()
   const port = Number((input as any).port ?? (input as any).sshPort ?? 22)
-  const username = String((input as any).user ?? (input as any).sshUsername ?? 'user')
+  const username = String((input as any).user ?? (input as any).sshUsername ?? 'user').trim()
 
   const password = (input as any).password ?? (input as any).sshPassword
   let privateKey: string | Buffer | undefined
@@ -67,6 +67,8 @@ class SSHManager {
   private credentials = new Map<string, NormalizedCredentials>()
   private pending = new Map<string, Promise<Client>>()
   private failures = new Map<string, FailureState>()
+  private leaseCounters = new Map<string, number>()
+  private activeLeases = new Map<string, number>()
 
   primeCredentials(projectId: string, rawCredentials: SandboxCredentials | Record<string, unknown>) {
     try {
@@ -81,16 +83,17 @@ class SSHManager {
     return this.connections.has(projectId)
   }
 
+  getLeaseId(projectId: string): number | null {
+    const lease = this.activeLeases.get(projectId)
+    return typeof lease === 'number' ? lease : null
+  }
+
   async getConnection(projectId: string): Promise<Client> {
     const existing = this.connections.get(projectId)
     if (existing) return existing
 
     const failure = this.failures.get(projectId)
-    if (
-      failure &&
-      failure.count >= MAX_CONSECUTIVE_FAILURES &&
-      Date.now() - failure.lastAt < BACKOFF_WINDOW_MS
-    ) {
+    if (failure && failure.count >= MAX_CONSECUTIVE_FAILURES && Date.now() - failure.lastAt < BACKOFF_WINDOW_MS) {
       throw new Error('Too many failed SSH attempts. Please wait before retrying.')
     }
 
@@ -163,6 +166,7 @@ class SSHManager {
     this.clearConnection(projectId)
     this.credentials.delete(projectId)
     this.pending.delete(projectId)
+    this.activeLeases.delete(projectId)
   }
 
   async closeConnection(projectId: string) {
@@ -176,6 +180,7 @@ class SSHManager {
     this.credentials.clear()
     this.pending.clear()
     this.failures.clear()
+    this.activeLeases.clear()
   }
 
   private async connectWithRecovery(projectId: string): Promise<Client> {
@@ -195,7 +200,10 @@ class SSHManager {
     throw secondAttempt.error
   }
 
-  private async connect(projectId: string, forceRefreshCredentials: boolean): Promise<{ ok: true; connection: Client } | { ok: false; error: unknown }> {
+  private async connect(
+    projectId: string,
+    forceRefreshCredentials: boolean,
+  ): Promise<{ ok: true; connection: Client } | { ok: false; error: unknown }> {
     try {
       const credentials = await this.resolveCredentials(projectId, forceRefreshCredentials)
       const connection = await this.openClient(projectId, credentials)
@@ -223,8 +231,16 @@ class SSHManager {
     return creds
   }
 
+  private nextLeaseId(projectId: string): number {
+    const next = (this.leaseCounters.get(projectId) ?? 0) + 1
+    this.leaseCounters.set(projectId, next)
+    this.activeLeases.set(projectId, next)
+    return next
+  }
+
   private async openClient(projectId: string, credentials: NormalizedCredentials): Promise<Client> {
     const conn = new Client()
+    const leaseId = this.nextLeaseId(projectId)
 
     await new Promise<void>((resolve, reject) => {
       const config: ConnectConfig = {
@@ -250,12 +266,13 @@ class SSHManager {
       conn.connect(config)
     })
 
-    conn.on('close', () => this.clearConnection(projectId))
-    conn.on('error', () => this.clearConnection(projectId))
+    conn.on('close', () => this.clearConnection(projectId, leaseId))
+    conn.on('error', () => this.clearConnection(projectId, leaseId))
 
     log.info(
       {
         projectId,
+        leaseId,
         host: credentials.host,
         port: credentials.port,
       },
@@ -265,7 +282,12 @@ class SSHManager {
     return conn
   }
 
-  private clearConnection(projectId: string) {
+  private clearConnection(projectId: string, leaseId?: number) {
+    const activeLease = this.activeLeases.get(projectId)
+    if (typeof leaseId === 'number' && typeof activeLease === 'number' && leaseId !== activeLease) {
+      return
+    }
+
     const conn = this.connections.get(projectId)
     if (!conn) return
 
@@ -276,6 +298,7 @@ class SSHManager {
     }
 
     this.connections.delete(projectId)
+    this.activeLeases.delete(projectId)
   }
 
   private recordFailure(projectId: string, error: unknown) {

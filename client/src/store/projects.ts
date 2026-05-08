@@ -32,23 +32,20 @@ export const useProjectsStore = create<ProjectsState>((set) => ({
     set({ loading: true, error: null })
     try {
       const { projects } = await api.listProjects()
-      console.log(`[projects] loaded ${projects.length} projects`)
-      set({ projects: projects as Project[], loading: false })
-    } catch (err) {
-      console.error('[projects] load failed', err)
-      set({ error: err instanceof Error ? err.message : String(err), loading: false })
+      set({ projects: projects as Project[], loading: false, error: null })
+    } catch (error) {
+      set({ error: error instanceof Error ? error.message : String(error), loading: false })
     }
   },
 
   createProject: async (body) => {
     const { project } = await api.createProject(body)
-    console.log('[projects] created', project.id)
-    set(s => ({ projects: [project as Project, ...s.projects] }))
+    set((state) => ({ projects: [project as Project, ...state.projects] }))
     return project as Project
   },
 
   deleteProject: async (id) => {
     await api.deleteProject(id)
-    set(s => ({ projects: s.projects.filter(p => p.id !== id) }))
+    set((state) => ({ projects: state.projects.filter((project) => project.id !== id) }))
   },
 }))

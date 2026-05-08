@@ -2,33 +2,44 @@ import { createLogger } from '../lib/logger.ts'
 
 const log = createLogger('streams')
 
+export type StreamTerminalState = 'complete' | 'cut_off' | 'empty' | 'error' | 'aborted'
+
 export interface ActiveStream {
   sessionId: string
   projectId: string
+  streamId: string
   abortController: AbortController
   startedAt: Date
+  sequence: number
+  terminalState: StreamTerminalState | null
+  abortReason: string | null
 }
 
-class StreamRegistry {
+export class StreamRegistry {
   private bySession = new Map<string, ActiveStream>()
   private byProject = new Map<string, Set<string>>()
+  private finalizedStreams = new Map<string, StreamTerminalState>()
 
-  register(sessionId: string, projectId: string, abortController: AbortController) {
+  register(sessionId: string, projectId: string, abortController: AbortController): ActiveStream {
     const existing = this.bySession.get(sessionId)
     if (existing) {
       try {
         existing.abortController.abort('replaced stream')
       } catch {
-        // no-op
+        // ignore
       }
-      this.unregister(sessionId)
+      this.unregister(sessionId, existing.streamId)
     }
 
     const stream: ActiveStream = {
       sessionId,
       projectId,
+      streamId: crypto.randomUUID(),
       abortController,
       startedAt: new Date(),
+      sequence: 0,
+      terminalState: null,
+      abortReason: null,
     }
 
     this.bySession.set(sessionId, stream)
@@ -38,12 +49,14 @@ class StreamRegistry {
     }
     this.byProject.get(projectId)!.add(sessionId)
 
-    log.debug({ sessionId, projectId, total: this.bySession.size }, 'stream registered')
+    log.debug({ sessionId, projectId, streamId: stream.streamId, total: this.bySession.size }, 'stream registered')
+    return stream
   }
 
-  unregister(sessionId: string) {
+  unregister(sessionId: string, streamId?: string) {
     const stream = this.bySession.get(sessionId)
     if (!stream) return
+    if (streamId && stream.streamId !== streamId) return
 
     this.bySession.delete(sessionId)
 
@@ -53,20 +66,57 @@ class StreamRegistry {
       if (projectSet.size === 0) this.byProject.delete(stream.projectId)
     }
 
-    log.debug({ sessionId, total: this.bySession.size }, 'stream unregistered')
+    if (stream.terminalState) {
+      this.finalizedStreams.set(stream.streamId, stream.terminalState)
+      if (this.finalizedStreams.size > 3000) {
+        const first = this.finalizedStreams.keys().next().value
+        if (first) this.finalizedStreams.delete(first)
+      }
+    }
+
+    log.debug({ sessionId, streamId: stream.streamId, total: this.bySession.size }, 'stream unregistered')
+  }
+
+  nextSequence(sessionId: string, streamId: string): number | null {
+    const stream = this.bySession.get(sessionId)
+    if (!stream) return null
+    if (stream.streamId !== streamId) return null
+
+    stream.sequence += 1
+    return stream.sequence
+  }
+
+  markTerminal(sessionId: string, streamId: string, terminalState: StreamTerminalState): boolean {
+    const stream = this.bySession.get(sessionId)
+    if (!stream || stream.streamId !== streamId) {
+      if (this.finalizedStreams.has(streamId)) return false
+      return false
+    }
+
+    if (stream.terminalState) return false
+
+    stream.terminalState = terminalState
+    return true
+  }
+
+  requestAbort(sessionId: string, reason = 'aborted'): { accepted: boolean; stream: ActiveStream | null } {
+    const stream = this.bySession.get(sessionId)
+    if (!stream) return { accepted: false, stream: null }
+
+    stream.abortReason = reason
+
+    try {
+      stream.abortController.abort(reason)
+    } catch {
+      // ignore
+    }
+
+    return { accepted: true, stream }
   }
 
   abort(sessionId: string, reason = 'aborted') {
-    const stream = this.bySession.get(sessionId)
-    if (!stream) return false
-
-    log.info({ sessionId, projectId: stream.projectId, reason }, 'aborting stream')
-    try {
-      stream.abortController.abort(reason)
-    } finally {
-      this.unregister(sessionId)
-    }
-    return true
+    const result = this.requestAbort(sessionId, reason)
+    return result.accepted
   }
 
   abortProject(projectId: string, reason = 'project abort') {
@@ -102,6 +152,10 @@ class StreamRegistry {
 
   getActive() {
     return [...this.bySession.values()]
+  }
+
+  isStreamFinalized(streamId: string): boolean {
+    return this.finalizedStreams.has(streamId)
   }
 }
 
