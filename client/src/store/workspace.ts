@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { addClientLog } from '../lib/serverLogs'
 
 export interface FileEntry {
   name: string
@@ -90,14 +89,3 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
   }),
 }))
 
-// One-time initialization log
-addClientLog('workspaceStore', 'module initialized - store created with defaults', {
-  projectId: null,
-  connected: false,
-  activeFile: null,
-  openFiles: [],
-  fileContents: {},
-  dirtyFiles: 0,
-  showPreview: false,
-  showTerminal: false,
-})

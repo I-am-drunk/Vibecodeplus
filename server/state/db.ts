@@ -2,6 +2,7 @@ import { Database } from 'bun:sqlite'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
 import { getDataDir } from './config.ts'
+import { ensureMigrationTables } from './migrations.ts'
 
 let db: Database
 
@@ -107,6 +108,16 @@ export function initDB(): Database {
   safeAlter('ALTER TABLE projects ADD COLUMN api_key_hash TEXT')
   safeAlter('ALTER TABLE projects ADD COLUMN snapshot_dir TEXT')
   safeAlter('ALTER TABLE projects ADD COLUMN snapshot_at DATETIME')
+  safeAlter('ALTER TABLE messages ADD COLUMN stream_id TEXT')
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_stream_id ON messages(stream_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_assistant_stream_unique
+      ON messages(session_id, stream_id)
+      WHERE role = 'assistant' AND stream_id IS NOT NULL;
+  `)
+
+  ensureMigrationTables(db)
 
   return db
 }

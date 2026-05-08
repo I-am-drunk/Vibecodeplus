@@ -3,6 +3,7 @@ import { closeProjectWS, getProjectWS } from '../lib/ws'
 import { useChatStore } from '../store/chat'
 import { useAuthStore } from '../store/auth'
 import { useWorkspaceStore } from '../store/workspace'
+import { createStreamLifecycleGuard } from '../lib/streamLifecycle'
 
 function extractTextChunk(event: any): string {
   if (typeof event?.text === 'string') return event.text
@@ -30,12 +31,17 @@ function parseToolResult(event: any) {
   if (!payload?.tool_use_id) return null
   return {
     id: String(payload.tool_use_id),
-    result:
-      typeof payload.content === 'string'
-        ? payload.content
-        : JSON.stringify(payload.content ?? ''),
-    status: payload.is_error ? 'error' as const : 'success' as const,
+    result: typeof payload.content === 'string' ? payload.content : JSON.stringify(payload.content ?? ''),
+    status: payload.is_error ? ('error' as const) : ('success' as const),
   }
+}
+
+function normalizeTerminal(rawTerminal: unknown): 'complete' | 'cut_off' | 'empty' | 'error' | 'aborted' {
+  if (rawTerminal === 'complete') return 'complete'
+  if (rawTerminal === 'error') return 'error'
+  if (rawTerminal === 'empty') return 'empty'
+  if (rawTerminal === 'aborted') return 'aborted'
+  return 'cut_off'
 }
 
 export function useProjectEvents(projectId: string | null) {
@@ -44,9 +50,12 @@ export function useProjectEvents(projectId: string | null) {
 
     let disposed = false
     let reconnectTimer: number | undefined
+    let reconnectAttempt = 0
     let socket: WebSocket | null = null
     let teardown: (() => void) | undefined
-    const streamBufferBySession = new Map<string, string>()
+
+    const streamGuard = createStreamLifecycleGuard()
+    const streamBufferById = new Map<string, string>()
 
     const connect = () => {
       if (disposed) return
@@ -69,25 +78,34 @@ export function useProjectEvents(projectId: string | null) {
         switch (event.type) {
           case 'chat:stream:start': {
             const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
-            if (sessionId) {
-              streamBufferBySession.set(sessionId, '')
-              chatStore.setActiveSession(sessionId)
-            }
-            chatStore.clearToolCalls()
-            chatStore.setStreaming(true)
+            const streamId = String(event.streamId || sessionId)
+            const sequence = Number(event.sequence || 0)
+            if (!sessionId || !streamId) break
+
+            const accepted = streamGuard.start(sessionId, streamId, sequence)
+            if (!accepted.accepted) break
+
+            streamBufferById.set(streamId, '')
+            chatStore.setActiveSession(sessionId)
+            chatStore.beginStream({ sessionId, streamId })
             break
           }
 
           case 'chat:event': {
             const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
+            const streamId = String(event.streamId || sessionId)
+            const sequence = Number(event.sequence || 0)
             const payload = event.event
 
-            if (!payload) break
+            if (!payload || !sessionId || !streamId) break
+
+            const accepted = streamGuard.acceptEvent(sessionId, streamId, sequence)
+            if (!accepted.accepted) break
 
             const textChunk = extractTextChunk(payload)
             if (textChunk) {
-              const previous = streamBufferBySession.get(sessionId) || ''
-              streamBufferBySession.set(sessionId, previous + textChunk)
+              const previous = streamBufferById.get(streamId) || ''
+              streamBufferById.set(streamId, previous + textChunk)
               chatStore.appendStreamText(textChunk)
             }
 
@@ -107,33 +125,52 @@ export function useProjectEvents(projectId: string | null) {
 
           case 'chat:stream:end': {
             const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
-            const content = streamBufferBySession.get(sessionId) || ''
+            const streamId = String(event.streamId || sessionId)
+            const sequence = Number(event.sequence || 0)
+            const terminal = normalizeTerminal(event.terminal)
 
-            chatStore.finalizeStream(content, !!event.cutOff)
-            chatStore.setStreaming(false)
-            streamBufferBySession.delete(sessionId)
+            if (!sessionId || !streamId) break
+
+            const accepted = streamGuard.acceptTerminal(sessionId, streamId, sequence, terminal)
+            if (!accepted.accepted) break
+
+            const content = streamBufferById.get(streamId) || ''
+
+            chatStore.finalizeStream({
+              sessionId,
+              streamId,
+              content,
+              terminal,
+            })
+            streamBufferById.delete(streamId)
+            streamGuard.clearSession(sessionId)
 
             if (event.creditsExhausted) chatStore.setCreditsExhausted(true)
             workspaceStore.notifyFileChanged()
             break
           }
 
-          case 'chat:stream:error': {
-            const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
-            const content = streamBufferBySession.get(sessionId) || ''
-
-            chatStore.finalizeStream(content, true)
-            chatStore.setStreaming(false)
-            streamBufferBySession.delete(sessionId)
-            break
-          }
-
+          case 'chat:stream:error':
           case 'chat:aborted': {
             const sessionId = String(event.sessionId || chatStore.activeSessionId || '')
-            const content = streamBufferBySession.get(sessionId) || ''
-            chatStore.finalizeStream(content, true)
-            chatStore.setStreaming(false)
-            streamBufferBySession.delete(sessionId)
+            const streamId = String(event.streamId || sessionId)
+            const sequence = Number(event.sequence || 0)
+
+            if (!sessionId || !streamId) break
+
+            const terminal = event.type === 'chat:aborted' ? 'aborted' : 'error'
+            const accepted = streamGuard.acceptTerminal(sessionId, streamId, sequence, terminal)
+            if (!accepted.accepted) break
+
+            const content = streamBufferById.get(streamId) || ''
+            chatStore.finalizeStream({
+              sessionId,
+              streamId,
+              content,
+              terminal,
+            })
+            streamBufferById.delete(streamId)
+            streamGuard.clearSession(sessionId)
             break
           }
 
@@ -157,19 +194,28 @@ export function useProjectEvents(projectId: string | null) {
       const onClose = () => {
         if (disposed) return
 
+        reconnectAttempt += 1
+        const delay = Math.min(1000 * 2 ** (reconnectAttempt - 1), 10_000)
+
         reconnectTimer = window.setTimeout(() => {
           connect()
-        }, 1200)
+        }, delay)
+      }
+
+      const onOpen = () => {
+        reconnectAttempt = 0
       }
 
       socket.addEventListener('message', onMessage)
       socket.addEventListener('close', onClose)
       socket.addEventListener('error', onClose)
+      socket.addEventListener('open', onOpen)
 
       teardown = () => {
         socket?.removeEventListener('message', onMessage)
         socket?.removeEventListener('close', onClose)
         socket?.removeEventListener('error', onClose)
+        socket?.removeEventListener('open', onOpen)
       }
     }
 

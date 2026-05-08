@@ -1,6 +1,20 @@
 import { useCallback, useRef } from 'react'
 import { api } from '../lib/api'
-import { useChatStore } from '../store/chat'
+import { useChatStore, type Message } from '../store/chat'
+
+export function resolveRetryUserIndex(messages: Message[], requestedIndex: number): number {
+  if (!messages.length) return -1
+
+  let cursor = requestedIndex
+  if (cursor >= messages.length) cursor = messages.length - 1
+  if (cursor < 0) cursor = messages.length - 1
+
+  for (let index = cursor; index >= 0; index -= 1) {
+    if (messages[index].role === 'user') return index
+  }
+
+  return -1
+}
 
 export function useChat(projectId: string | null) {
   const model = useChatStore((state) => state.model)
@@ -27,10 +41,7 @@ export function useChat(projectId: string | null) {
       chatStore.setStreaming(true)
 
       try {
-        const resolvedSessionId =
-          sessionId === undefined
-            ? activeSessionId ?? undefined
-            : sessionId ?? undefined
+        const resolvedSessionId = sessionId === undefined ? activeSessionId ?? undefined : sessionId ?? undefined
 
         const response = await api.sendMessage({
           projectId,
@@ -40,11 +51,15 @@ export function useChat(projectId: string | null) {
           agentUrl: (window as any).__agentUrl,
         })
 
+        if (response.canonicalProjectId && response.canonicalProjectId !== projectId) {
+          window.history.replaceState(null, '', `/workspace/${response.canonicalProjectId}`)
+        }
+
         if (response.sessionId && chatStore.activeSessionId !== response.sessionId) {
           chatStore.setActiveSession(response.sessionId)
         }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
         const lower = message.toLowerCase()
 
         if (lower.includes('credit') || lower.includes('exhaust') || lower.includes('402')) {
@@ -52,7 +67,7 @@ export function useChat(projectId: string | null) {
         }
 
         chatStore.setStreaming(false)
-        throw err
+        throw error
       } finally {
         sendingRef.current = false
       }
@@ -61,14 +76,34 @@ export function useChat(projectId: string | null) {
   )
 
   const retryFromIndex = useCallback(
-    async (userMessageIndex: number) => {
+    async (requestedIndex: number) => {
       const state = useChatStore.getState()
-      const message = state.messages[userMessageIndex]
-      if (!message || message.role !== 'user') return
+      const retryIndex = resolveRetryUserIndex(state.messages, requestedIndex)
+      if (retryIndex < 0) return
 
-      state.setMessages(state.messages.slice(0, userMessageIndex))
+      const retryMessage = state.messages[retryIndex]
+      if (!retryMessage || retryMessage.role !== 'user') return
+
+      const previousMessages = state.messages
+      const previousSessionId = state.activeSessionId
+      const previousToolCalls = state.toolCalls
+
+      state.setMessages(state.messages.slice(0, retryIndex))
       state.setActiveSession(null)
-      await sendMessage(message.content, null)
+      state.clearToolCalls()
+      state.setStreaming(false)
+
+      try {
+        await sendMessage(retryMessage.content, null)
+      } catch (error) {
+        state.setMessages(previousMessages)
+        state.setActiveSession(previousSessionId)
+        for (const toolCall of previousToolCalls) {
+          state.addToolCall(toolCall)
+        }
+        state.setStreaming(false)
+        throw error
+      }
     },
     [sendMessage],
   )
@@ -94,15 +129,19 @@ export function useChat(projectId: string | null) {
       throw new Error('Invalid session payload')
     }
 
-    const mapped = response.messages.map((message: any) => ({
-      id: String(message.id),
-      role: message.role,
-      content: message.content,
-      createdAt: message.createdAt || message.created_at || new Date().toISOString(),
-      inputTokens: message.inputTokens ?? message.input_tokens,
-      outputTokens: message.outputTokens ?? message.output_tokens,
-      cutOff: message.status === 'cut_off' || message.status === 'error' || message.status === 'empty',
-    }))
+    const mapped = response.messages.map((message: any) => {
+      const terminal = message.status as Message['terminalStatus']
+      return {
+        id: String(message.id),
+        role: message.role,
+        content: message.content,
+        createdAt: message.createdAt || message.created_at || new Date().toISOString(),
+        inputTokens: message.inputTokens ?? message.input_tokens,
+        outputTokens: message.outputTokens ?? message.output_tokens,
+        cutOff: message.status !== 'complete',
+        terminalStatus: terminal,
+      } satisfies Message
+    })
 
     const chatStore = useChatStore.getState()
     chatStore.setMessages(mapped)

@@ -5,9 +5,18 @@ import { getDB } from '../state/db.ts'
 import { loadStoredAuth } from '../state/auth.ts'
 import { sshManager } from '../ssh/manager.ts'
 import { captureNow, pushToProject } from '../continuation/capture.ts'
-import { agentUrls } from './projects.ts'
 import { createLogger } from '../lib/logger.ts'
 import { fileWatcher } from '../ssh/watcher.ts'
+import {
+  getLatestMigrationForSource,
+  getProjectMigration,
+  resolveCanonicalProjectId,
+} from '../state/migrations.ts'
+import { continuationOrchestrator } from '../continuation/orchestrator.ts'
+import { parseContinuationEnactRequest, readBody } from '../contracts/routes.ts'
+import { AppError, badRequest, jsonError, notFound, success, unauthorized } from '../lib/errors.ts'
+import { agentUrls } from '../state/agents.ts'
+import { featureFlags } from '../lib/flags.ts'
 
 const log = createLogger('continuation')
 
@@ -27,134 +36,200 @@ function hashKey(key: string): string {
   return createHash('sha256').update(key).digest('hex').slice(0, 16)
 }
 
+function serializeMigration(migration: ReturnType<typeof getProjectMigration>) {
+  if (!migration) return null
+
+  return {
+    id: migration.id,
+    sourceProjectId: migration.sourceProjectId,
+    targetProjectId: migration.targetProjectId,
+    status: migration.status,
+    stage: migration.stage,
+    stageMessage: migration.stageMessage,
+    sourcePreserved: migration.sourcePreserved,
+    warning: migration.warning,
+    errorCode: migration.errorCode,
+    errorMessage: migration.errorMessage,
+    startedAt: migration.startedAt,
+    updatedAt: migration.updatedAt,
+    completedAt: migration.completedAt,
+    failedAt: migration.failedAt,
+  }
+}
+
 continuationRouter.get('/status/:projectId', (c) => {
-  const { projectId } = c.req.param()
-  const db = getDB()
-  const row = db
-    .prepare('SELECT api_key_hash, snapshot_dir, snapshot_at FROM projects WHERE id = ?')
-    .get(projectId) as { api_key_hash: string | null; snapshot_dir: string | null; snapshot_at: string | null } | undefined
+  try {
+    const projectId = c.req.param('projectId')
+    if (!projectId) throw badRequest('projectId is required')
 
-  if (!row) return c.json({ error: 'not found' }, 404)
+    const db = getDB()
+    const resolved = resolveCanonicalProjectId(projectId)
 
-  const auth = loadStoredAuth()
-  const currentHash = auth?.key ? hashKey(auth.key) : null
-  const needsContinuation = !!(row.api_key_hash && currentHash && row.api_key_hash !== currentHash)
+    const requestedRow = db
+      .prepare('SELECT api_key_hash, snapshot_dir, snapshot_at FROM projects WHERE id = ?')
+      .get(projectId) as { api_key_hash: string | null; snapshot_dir: string | null; snapshot_at: string | null } | undefined
 
-  return c.json({
-    snapshotDir: row.snapshot_dir,
-    snapshotAt: row.snapshot_at,
-    needsContinuation,
-  })
+    const canonicalRow = db
+      .prepare('SELECT api_key_hash, snapshot_dir, snapshot_at FROM projects WHERE id = ?')
+      .get(resolved.canonicalProjectId) as
+      | { api_key_hash: string | null; snapshot_dir: string | null; snapshot_at: string | null }
+      | undefined
+
+    if (!requestedRow && !canonicalRow) throw notFound('Project not found')
+
+    const row = requestedRow ?? canonicalRow!
+
+    const auth = loadStoredAuth()
+    const currentHash = auth?.key ? hashKey(auth.key) : null
+    const needsContinuation =
+      !resolved.mappedFromProjectId && !!(row.api_key_hash && currentHash && row.api_key_hash !== currentHash)
+
+    const latestMigration = getLatestMigrationForSource(projectId)
+
+    return c.json(
+      success({
+        snapshotDir: row.snapshot_dir,
+        snapshotAt: row.snapshot_at,
+        needsContinuation,
+        canonicalProjectId: resolved.canonicalProjectId,
+        mappedFromProjectId: resolved.mappedFromProjectId,
+        migration: latestMigration ? serializeMigration(latestMigration) : null,
+      }),
+    )
+  } catch (error) {
+    return jsonError(c, error)
+  }
+})
+
+continuationRouter.get('/migrations/:migrationId', (c) => {
+  try {
+    const migrationId = c.req.param('migrationId')
+    if (!migrationId) throw badRequest('migrationId is required')
+
+    const migration = getProjectMigration(migrationId)
+    if (!migration) throw notFound('Migration not found', { migrationId })
+
+    return c.json(success({ migration: serializeMigration(migration) }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
 })
 
 continuationRouter.post('/capture/:projectId', async (c) => {
-  const { projectId } = c.req.param()
-
   try {
-    const count = await captureNow(projectId)
-    return c.json({ ok: true, fileCount: count })
-  } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+    const projectId = c.req.param('projectId')
+    if (!projectId) throw badRequest('projectId is required')
+
+    const resolved = resolveCanonicalProjectId(projectId)
+    const count = await captureNow(resolved.canonicalProjectId)
+
+    return c.json(success({ ok: true, fileCount: count, canonicalProjectId: resolved.canonicalProjectId }))
+  } catch (error) {
+    return jsonError(c, error)
   }
 })
 
 continuationRouter.post('/enact', async (c) => {
-  const { sourceProjectId } = await c.req.json<{ sourceProjectId?: string }>()
-  if (!sourceProjectId) return c.json({ error: 'sourceProjectId required' }, 400)
+  try {
+    const body = await parseContinuationEnactRequest(await readBody(c))
 
-  const db = getDB()
-  const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(sourceProjectId) as ProjectRow | undefined
-  if (!source) return c.json({ error: 'Source project not found' }, 404)
+    const db = getDB()
+    const source = db.prepare('SELECT * FROM projects WHERE id = ?').get(body.sourceProjectId) as ProjectRow | undefined
+    if (!source) throw notFound('Source project not found')
 
-  const auth = loadStoredAuth()
-  if (!auth?.key) return c.json({ error: 'No API key configured' }, 401)
+    const auth = loadStoredAuth()
+    if (!auth?.key) throw unauthorized('No API key configured')
 
+    if (!featureFlags.migration_v2) {
+      const legacyResult = await runLegacyEnact(body.sourceProjectId, source, auth.key)
+      return c.json(success(legacyResult))
+    }
+
+    const migration = continuationOrchestrator.start(body.sourceProjectId)
+    const statusCode = migration.status === 'completed' ? 200 : 202
+
+    return c.json(
+      success({
+        ok: true,
+        migration: serializeMigration(migration),
+      }),
+      statusCode,
+    )
+  } catch (error) {
+    return jsonError(c, error)
+  }
+})
+
+async function runLegacyEnact(sourceProjectId: string, source: ProjectRow, authKey: string) {
   const continuationName = source.name || 'Continued Project'
   const continuationDescription = source.description || continuationName
 
-  log.info({ sourceProjectId, continuationName }, 'starting continuation migration')
+  const createResult = await cli.createProject(continuationName, {
+    description: continuationDescription,
+  })
 
-  try {
-    const createResult = await cli.createProject(continuationName, {
-      description: continuationDescription,
-    })
-
-    if (!createResult.ok) {
-      return c.json({ error: createResult.error.message || 'Failed to create continuation project' }, 500)
-    }
-
-    const newProjectId = createResult.data.id
-
-    const verify = await cli.listProjects()
-    if (verify.ok) {
-      const exists = verify.data.some((project: any) => project.id === newProjectId)
-      if (!exists) {
-        return c.json({ error: 'Project creation could not be verified. Please try again.' }, 500)
-      }
-    }
-
-    db.prepare(`
-      INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-      ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        description = excluded.description,
-        default_model = excluded.default_model,
-        api_key_hash = excluded.api_key_hash,
-        updated_at = datetime('now')
-    `).run(
-      newProjectId,
-      continuationName,
-      continuationDescription,
-      source.default_model || 'claude-sonnet-4-6',
-      hashKey(auth.key),
-    )
-
-    let fileTransferWarning: string | null = null
-    let preserveSourceProject = false
-
-    const sandboxResult = await cli.acquireSandbox(newProjectId)
-    if (sandboxResult.ok) {
-      const sandbox = sandboxResult.data.sandbox
-      const links = sandboxResult.data.links
-
-      sshManager.primeCredentials(newProjectId, sandbox)
-      await sshManager.getConnection(newProjectId)
-
-      if (links?.agentUrl?.url) {
-        agentUrls.set(newProjectId, links.agentUrl.url)
-      }
-
-      if (source.snapshot_dir) {
-        try {
-          await pushToProject(sourceProjectId, newProjectId)
-        } catch (err) {
-          fileTransferWarning = err instanceof Error ? err.message : String(err)
-          preserveSourceProject = true
-          log.warn({ sourceProjectId, newProjectId, warning: fileTransferWarning }, 'snapshot push failed')
-        }
-      }
-    } else {
-      fileTransferWarning = sandboxResult.error.message || 'Could not acquire sandbox for the new project'
-      preserveSourceProject = !!source.snapshot_dir
-    }
-
-    if (!preserveSourceProject) {
-      db.prepare('DELETE FROM projects WHERE id = ?').run(sourceProjectId)
-      fileWatcher.stop(sourceProjectId)
-      await sshManager.closeConnection(sourceProjectId).catch(() => {})
-      agentUrls.delete(sourceProjectId)
-    }
-
-    return c.json({
-      ok: true,
-      newProjectId,
-      name: continuationName,
-      warning: fileTransferWarning,
-      sourcePreserved: preserveSourceProject,
-    })
-  } catch (err) {
-    log.error({ error: String(err), sourceProjectId }, 'continuation failed')
-    return c.json({ error: err instanceof Error ? err.message : String(err) }, 500)
+  if (!createResult.ok) {
+    throw new AppError('DEPENDENCY_ERROR', createResult.error.message || 'Failed to create continuation project', 502)
   }
-})
+
+  const newProjectId = createResult.data.id
+
+  const verify = await cli.listProjects()
+  if (verify.ok) {
+    const exists = verify.data.some((project) => project.id === newProjectId)
+    if (!exists) {
+      throw new AppError('MIGRATION_FAILED', 'Project creation could not be verified. Please try again.', 500)
+    }
+  }
+
+  const db = getDB()
+
+  db.prepare(`
+    INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      default_model = excluded.default_model,
+      api_key_hash = excluded.api_key_hash,
+      updated_at = datetime('now')
+  `).run(newProjectId, continuationName, continuationDescription, source.default_model || 'claude-sonnet-4-6', hashKey(authKey))
+
+  let fileTransferWarning: string | null = null
+  let sourcePreserved = true
+
+  const sandboxResult = await cli.acquireSandbox(newProjectId)
+  if (sandboxResult.ok) {
+    const sandbox = sandboxResult.data.sandbox
+    const links = sandboxResult.data.links as any
+
+    sshManager.primeCredentials(newProjectId, sandbox)
+    await sshManager.getConnection(newProjectId)
+
+    if (links?.agentUrl?.url) {
+      agentUrls.set(newProjectId, String(links.agentUrl.url))
+    }
+
+    if (source.snapshot_dir) {
+      try {
+        await pushToProject(sourceProjectId, newProjectId)
+      } catch (error) {
+        fileTransferWarning = error instanceof Error ? error.message : String(error)
+        log.warn({ sourceProjectId, newProjectId, warning: fileTransferWarning }, 'snapshot push failed in legacy mode')
+      }
+    }
+  } else {
+    fileTransferWarning = sandboxResult.error.message || 'Could not acquire sandbox for the new project'
+  }
+
+  fileWatcher.stop(sourceProjectId)
+  await sshManager.closeConnection(sourceProjectId).catch(() => {})
+  agentUrls.delete(sourceProjectId)
+
+  return {
+    newProjectId,
+    name: continuationName,
+    warning: fileTransferWarning,
+    sourcePreserved,
+  }
+}

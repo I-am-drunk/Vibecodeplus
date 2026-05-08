@@ -5,7 +5,7 @@ import { Button } from '../ui/Button'
 import { LowCreditsDialog } from './LowCreditsDialog'
 import { useAuthStore } from '../../store/auth'
 import { api } from '../../lib/api'
-import { addClientLog } from '../../lib/serverLogs'
+
 
 interface Props {
   open: boolean

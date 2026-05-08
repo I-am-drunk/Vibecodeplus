@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -n server,client -c cyan,magenta \"bun run server/index.ts\" \"vite --config vite.config.ts\"",
+    "typecheck": "tsc --noEmit",
     "build": "vite build && bun build server/index.ts --outdir dist/server --target bun",
+    "test": "bun test",
     "start": "NODE_ENV=production bun run dist/server/index.js",
     "preview": "vite preview"
   },

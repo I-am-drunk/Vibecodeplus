@@ -7,10 +7,29 @@ import { sshManager } from '../ssh/manager.ts'
 import { backupCoordinator } from '../backup/coordinator.ts'
 import { createLogger } from '../lib/logger.ts'
 import { fileWatcher } from '../ssh/watcher.ts'
+import {
+  getLatestMigrationForSource,
+  resolveCanonicalProjectId,
+  upsertProjectAlias,
+} from '../state/migrations.ts'
+import {
+  badRequest,
+  dependencyError,
+  jsonError,
+  notFound,
+  success,
+  forbidden,
+  AppError,
+  migrationInProgress,
+} from '../lib/errors.ts'
+import {
+  parseCreateProjectRequest,
+  parsePatchProjectRequest,
+  readBody,
+} from '../contracts/routes.ts'
+import { agentUrls } from '../state/agents.ts'
 
 const log = createLogger('projects')
-
-export const agentUrls = new Map<string, string>()
 
 export const projectsRouter = new Hono()
 
@@ -52,6 +71,14 @@ function toProjectResponse(row: ProjectRow, remote?: any, currentHash?: string |
   }
 }
 
+function resolveRequestedProject(projectId: string) {
+  const resolved = resolveCanonicalProjectId(projectId)
+  return {
+    canonicalProjectId: resolved.canonicalProjectId,
+    mappedFromProjectId: resolved.mappedFromProjectId,
+  }
+}
+
 async function listRemoteProjectsSafe() {
   const result = await cli.listProjects()
   if (!result.ok) {
@@ -59,206 +86,283 @@ async function listRemoteProjectsSafe() {
     return new Map<string, any>()
   }
 
-  return new Map(result.data.map((project: any) => [project.id, project]))
+  return new Map(result.data.map((project) => [project.id, project]))
 }
 
 projectsRouter.get('/', async (c) => {
-  const db = getDB()
-  const currentHash = getCurrentAuthHash()
+  try {
+    const db = getDB()
+    const currentHash = getCurrentAuthHash()
 
-  const rows = db.prepare(`
-    SELECT * FROM projects
-    ORDER BY COALESCE(last_opened_at, created_at) DESC
-  `).all() as ProjectRow[]
+    const rows = db.prepare(`
+      SELECT p.*
+      FROM projects p
+      LEFT JOIN project_aliases a ON a.source_project_id = p.id
+      WHERE a.source_project_id IS NULL
+      ORDER BY COALESCE(p.last_opened_at, p.created_at) DESC
+    `).all() as ProjectRow[]
 
-  const remoteProjects = await listRemoteProjectsSafe()
-  const projects = rows.map((row) => toProjectResponse(row, remoteProjects.get(row.id), currentHash))
+    const remoteProjects = await listRemoteProjectsSafe()
+    const projects = rows.map((row) => toProjectResponse(row, remoteProjects.get(row.id), currentHash))
 
-  return c.json({ projects })
+    return c.json(success({ projects }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
 })
 
 projectsRouter.post('/', async (c) => {
-  const body = await c.req.json<{ name?: string; description?: string; template?: string; defaultModel?: string }>()
-  const name = body.name?.trim()
+  try {
+    const body = await parseCreateProjectRequest(await readBody(c))
 
-  if (!name) return c.json({ error: 'name is required' }, 400)
+    const createResult = await cli.createProject(body.name, {
+      description: body.description,
+      template: body.template,
+    })
 
-  const createResult = await cli.createProject(name, {
-    description: body.description,
-    template: body.template,
-  })
+    if (!createResult.ok) {
+      throw dependencyError(createResult.error.message || 'Failed to create project', {
+        dependencyCode: createResult.error.code,
+      })
+    }
 
-  if (!createResult.ok) {
-    return c.json({ error: createResult.error.message || 'Failed to create project' }, 500)
+    const db = getDB()
+    const currentHash = getCurrentAuthHash()
+
+    db.prepare(`
+      INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        description = excluded.description,
+        default_model = excluded.default_model,
+        api_key_hash = excluded.api_key_hash,
+        updated_at = datetime('now')
+    `).run(
+      createResult.data.id,
+      body.name,
+      body.description ?? null,
+      body.defaultModel ?? 'claude-sonnet-4-6',
+      currentHash,
+    )
+
+    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(createResult.data.id) as ProjectRow
+    return c.json(success({ project: toProjectResponse(row, createResult.data, currentHash) }), 201)
+  } catch (error) {
+    return jsonError(c, error)
   }
-
-  const db = getDB()
-  const currentHash = getCurrentAuthHash()
-
-  db.prepare(`
-    INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET
-      name = excluded.name,
-      description = excluded.description,
-      default_model = excluded.default_model,
-      api_key_hash = excluded.api_key_hash,
-      updated_at = datetime('now')
-  `).run(
-    createResult.data.id,
-    name,
-    body.description ?? null,
-    body.defaultModel ?? 'claude-sonnet-4-6',
-    currentHash,
-  )
-
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(createResult.data.id) as ProjectRow
-  return c.json({ project: toProjectResponse(row, createResult.data, currentHash) }, 201)
 })
 
 projectsRouter.get('/:id', async (c) => {
-  const projectId = c.req.param('id')
-  const db = getDB()
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
+  try {
+    const requestedId = c.req.param('id')
+    if (!requestedId) throw badRequest('Project id is required')
 
-  if (!row) return c.json({ error: 'project not found' }, 404)
+    const { canonicalProjectId, mappedFromProjectId } = resolveRequestedProject(requestedId)
+    const db = getDB()
 
-  const remoteProjects = await listRemoteProjectsSafe()
-  const project = toProjectResponse(row, remoteProjects.get(projectId), getCurrentAuthHash())
-  return c.json({ project })
+    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(canonicalProjectId) as ProjectRow | undefined
+    if (!row) throw notFound('Project not found', { projectId: canonicalProjectId })
+
+    const remoteProjects = await listRemoteProjectsSafe()
+    const project = toProjectResponse(row, remoteProjects.get(canonicalProjectId), getCurrentAuthHash())
+    return c.json(success({ project, canonicalProjectId, mappedFromProjectId }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
 })
 
 projectsRouter.patch('/:id', async (c) => {
-  const projectId = c.req.param('id')
-  const { defaultModel } = await c.req.json<{ defaultModel?: string }>()
+  try {
+    const requestedId = c.req.param('id')
+    if (!requestedId) throw badRequest('Project id is required')
 
-  if (!defaultModel?.trim()) {
-    return c.json({ error: 'defaultModel is required' }, 400)
+    const { canonicalProjectId } = resolveRequestedProject(requestedId)
+    const body = await parsePatchProjectRequest(await readBody(c))
+
+    const db = getDB()
+    const result = db.prepare(`
+      UPDATE projects
+      SET default_model = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(body.defaultModel, canonicalProjectId)
+
+    if (result.changes === 0) {
+      throw notFound('Project not found', { projectId: canonicalProjectId })
+    }
+
+    return c.json(success({ ok: true }))
+  } catch (error) {
+    return jsonError(c, error)
   }
-
-  const db = getDB()
-  db.prepare(`
-    UPDATE projects
-    SET default_model = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(defaultModel.trim(), projectId)
-
-  return c.json({ ok: true })
 })
 
 projectsRouter.delete('/:id', async (c) => {
-  const projectId = c.req.param('id')
-  const remoteDelete = await cli.deleteProject(projectId)
+  try {
+    const requestedId = c.req.param('id')
+    if (!requestedId) throw badRequest('Project id is required')
 
-  if (!remoteDelete.ok) {
-    const message = remoteDelete.error.message?.toLowerCase() ?? ''
-    const ignorable = message.includes('not found') || message.includes('forbidden')
-    if (!ignorable) {
-      log.warn({ projectId, error: remoteDelete.error.message }, 'remote delete failed')
+    const { canonicalProjectId } = resolveRequestedProject(requestedId)
+
+    const remoteDelete = await cli.deleteProject(canonicalProjectId)
+
+    if (!remoteDelete.ok) {
+      const message = remoteDelete.error.message?.toLowerCase() ?? ''
+      const ignorable = message.includes('not found') || message.includes('forbidden')
+      if (!ignorable) {
+        log.warn({ projectId: canonicalProjectId, error: remoteDelete.error.message }, 'remote delete failed')
+      }
     }
+
+    await sshManager.disconnect(canonicalProjectId).catch(() => {})
+    fileWatcher.stop(canonicalProjectId)
+    agentUrls.delete(canonicalProjectId)
+
+    const db = getDB()
+    db.prepare('DELETE FROM projects WHERE id = ?').run(canonicalProjectId)
+    db.prepare('DELETE FROM sessions WHERE project_id = ?').run(canonicalProjectId)
+
+    return c.json(success({ ok: true }))
+  } catch (error) {
+    return jsonError(c, error)
   }
-
-  await sshManager.disconnect(projectId).catch(() => {})
-  fileWatcher.stop(projectId)
-  agentUrls.delete(projectId)
-
-  const db = getDB()
-  db.prepare('DELETE FROM projects WHERE id = ?').run(projectId)
-  db.prepare('DELETE FROM sessions WHERE project_id = ?').run(projectId)
-
-  return c.json({ ok: true })
 })
 
 projectsRouter.post('/:id/workspace', async (c) => {
-  const projectId = c.req.param('id')
-  if (!projectId || projectId === 'null' || projectId === 'undefined') {
-    return c.json({ error: 'Invalid project ID' }, 400)
-  }
-
-  const db = getDB()
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
-  if (!row) {
-    return c.json({ error: 'Project not found. Projects must be created through this studio.' }, 404)
-  }
-
-  const existingConnection = sshManager.isConnected(projectId)
-  const existingAgentUrl = agentUrls.get(projectId)
-  if (existingConnection && existingAgentUrl) {
-    db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
-    return c.json({ ok: true, agentUrl: existingAgentUrl })
-  }
-
-  db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
-
-  const acquire = await cli.acquireSandbox(projectId)
-  if (!acquire.ok) {
-    const message = acquire.error.message || 'Failed to acquire sandbox'
-
-    if (acquire.error.code === 'CREDITS_EXHAUSTED') {
-      return c.json({ error: 'Insufficient credits. Add credits at vibecode.dev/payments' }, 402)
+  try {
+    const requestedProjectId = c.req.param('id')
+    if (!requestedProjectId || requestedProjectId === 'null' || requestedProjectId === 'undefined') {
+      throw badRequest('Invalid project ID')
     }
 
-    if (message.toLowerCase().includes('forbidden')) {
-      const remote = await cli.listProjects()
-      const existsRemotely = remote.ok && remote.data.some((project: any) => project.id === projectId)
-      if (!existsRemotely) {
-        return c.json({ ok: false, differentKey: true, snapshotAt: row.snapshot_at ?? null })
-      }
+    const latestMigration = getLatestMigrationForSource(requestedProjectId)
+    if (latestMigration && (latestMigration.status === 'pending' || latestMigration.status === 'running')) {
+      throw migrationInProgress('Migration is currently in progress for this project', {
+        migrationId: latestMigration.id,
+        stage: latestMigration.stage,
+        status: latestMigration.status,
+        targetProjectId: latestMigration.targetProjectId,
+      })
+    }
 
+    if (latestMigration?.status === 'completed' && latestMigration.targetProjectId) {
+      upsertProjectAlias(requestedProjectId, latestMigration.targetProjectId, latestMigration.id)
+    }
+
+    const resolved = resolveRequestedProject(requestedProjectId)
+    const projectId = resolved.canonicalProjectId
+
+    const db = getDB()
+    const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
+    if (!row) {
+      throw notFound('Project not found. Projects must be created through this studio.', { projectId })
+    }
+
+    const existingConnection = sshManager.isConnected(projectId)
+    const existingAgentUrl = agentUrls.get(projectId)
+    if (existingConnection && existingAgentUrl) {
+      db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
       return c.json(
-        {
-          error: 'API key is invalid or account is restricted. Please update your API key in Settings.',
-          code: 'FORBIDDEN',
-        },
-        403,
+        success({
+          ok: true,
+          agentUrl: existingAgentUrl,
+          canonicalProjectId: projectId,
+          mappedFromProjectId: resolved.mappedFromProjectId,
+        }),
       )
     }
 
-    return c.json({ error: message }, 500)
+    db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
+
+    const acquire = await cli.acquireSandbox(projectId)
+    if (!acquire.ok) {
+      const message = acquire.error.message || 'Failed to acquire sandbox'
+
+      if (acquire.error.code === 'CREDITS_EXHAUSTED') {
+        throw new AppError('CREDITS_EXHAUSTED', 'Insufficient credits. Add credits at vibecode.dev/payments', 402)
+      }
+
+      if (acquire.error.code === 'AUTH_FAILED' || message.toLowerCase().includes('forbidden')) {
+        const remote = await cli.listProjects()
+        const existsRemotely = remote.ok && remote.data.some((project) => project.id === projectId)
+        if (!existsRemotely) {
+          return c.json(
+            success({
+              ok: false,
+              differentKey: true,
+              snapshotAt: row.snapshot_at ?? null,
+              canonicalProjectId: projectId,
+              mappedFromProjectId: resolved.mappedFromProjectId,
+            }),
+          )
+        }
+
+        throw forbidden('API key is invalid or account is restricted. Please update your API key in Settings.', {
+          reason: 'FORBIDDEN',
+        })
+      }
+
+      throw dependencyError(message, { dependencyCode: acquire.error.code })
+    }
+
+    const sandbox = acquire.data.sandbox
+    const links = acquire.data.links as any
+
+    sshManager.primeCredentials(projectId, sandbox)
+
+    try {
+      await sshManager.getConnection(projectId)
+    } catch (error) {
+      throw dependencyError(`SSH connect failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (links?.agentUrl?.url) {
+      agentUrls.set(projectId, String(links.agentUrl.url))
+    }
+
+    const currentHash = getCurrentAuthHash()
+    if (currentHash) {
+      db.prepare(`UPDATE projects SET api_key_hash = ?, updated_at = datetime('now') WHERE id = ?`).run(currentHash, projectId)
+    }
+
+    try {
+      await backupCoordinator.restoreLatest(projectId)
+    } catch (error) {
+      log.warn({ projectId, error: String(error) }, 'failed to restore latest backup')
+    }
+
+    return c.json(
+      success({
+        ok: true,
+        sandbox: {
+          host: sandbox?.host,
+          port: sandbox?.port,
+          user: sandbox?.user,
+        },
+        agentUrl: links?.agentUrl?.url,
+        links,
+        canonicalProjectId: projectId,
+        mappedFromProjectId: resolved.mappedFromProjectId,
+      }),
+    )
+  } catch (error) {
+    return jsonError(c, error)
   }
-
-  const sandbox = acquire.data.sandbox
-  const links = acquire.data.links
-
-  sshManager.primeCredentials(projectId, sandbox)
-
-  try {
-    await sshManager.getConnection(projectId)
-  } catch (err) {
-    return c.json({ error: `SSH connect failed: ${err instanceof Error ? err.message : String(err)}` }, 500)
-  }
-
-  if (links?.agentUrl?.url) {
-    agentUrls.set(projectId, links.agentUrl.url)
-  }
-
-  const currentHash = getCurrentAuthHash()
-  if (currentHash) {
-    db.prepare(`UPDATE projects SET api_key_hash = ?, updated_at = datetime('now') WHERE id = ?`).run(currentHash, projectId)
-  }
-
-  try {
-    await backupCoordinator.restoreLatest(projectId)
-  } catch (err) {
-    log.warn({ projectId, error: String(err) }, 'failed to restore latest backup')
-  }
-
-  return c.json({
-    ok: true,
-    sandbox: {
-      host: sandbox?.ipv4,
-      port: sandbox?.sshPort,
-      user: sandbox?.sshUsername,
-    },
-    agentUrl: links?.agentUrl?.url,
-    links,
-  })
 })
 
 projectsRouter.delete('/:id/workspace', async (c) => {
-  const projectId = c.req.param('id')
-  await sshManager.disconnect(projectId).catch(() => {})
-  fileWatcher.stop(projectId)
-  agentUrls.delete(projectId)
-  return c.json({ ok: true })
+  try {
+    const requestedProjectId = c.req.param('id')
+    if (!requestedProjectId) throw badRequest('Project id is required')
+
+    const { canonicalProjectId } = resolveRequestedProject(requestedProjectId)
+
+    await sshManager.disconnect(canonicalProjectId).catch(() => {})
+    fileWatcher.stop(canonicalProjectId)
+    agentUrls.delete(canonicalProjectId)
+
+    return c.json(success({ ok: true }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
 })

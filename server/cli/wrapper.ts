@@ -1,25 +1,26 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
 import { which } from '../process/registry.ts'
-import type {
-  CLIResult,
-  CLIError,
-  VibecodeUser,
-  VibecodeProject,
-  AgentStreamEvent,
-} from './types.ts'
+import type { CLIResult, CLIError, VibecodeUser, VibecodeProject, AgentStreamEvent } from './types.ts'
 import { createLogger } from '../lib/logger.ts'
+import {
+  parseAcquireSandboxPayload,
+  parseAgentStopPayload,
+  parseAgentStreamEvent,
+  parseCliProjectsPayload,
+  parseCliUserPayload,
+} from '../contracts/cli.ts'
 
 const log = createLogger('cli')
 
-function parseFirstJson(text: string): any | null {
+function parseFirstJson(text: string): unknown | null {
   const trimmed = text.trim()
   if (!trimmed) return null
 
   try {
     return JSON.parse(trimmed)
   } catch {
-    // fall through
+    // continue
   }
 
   const lines = trimmed
@@ -97,11 +98,13 @@ export class VibecodeCliWrapper {
 
       let stdout = ''
       let stderr = ''
+      let timedOut = false
 
       const onAbort = () => proc.kill('SIGTERM')
       opts?.signal?.addEventListener('abort', onAbort)
 
       const timer = setTimeout(() => {
+        timedOut = true
         proc.kill('SIGTERM')
       }, timeoutMs)
 
@@ -116,6 +119,19 @@ export class VibecodeCliWrapper {
       proc.on('close', (code) => {
         clearTimeout(timer)
         opts?.signal?.removeEventListener('abort', onAbort)
+
+        if (timedOut) {
+          resolve({
+            ok: false,
+            error: {
+              code: 'TIMEOUT',
+              message: 'CLI command timed out',
+              stderr,
+              exitCode: code ?? 124,
+            },
+          })
+          return
+        }
 
         if (code !== 0) {
           resolve({ ok: false, error: this.parseError(code ?? 1, stdout, stderr) })
@@ -186,9 +202,9 @@ export class VibecodeCliWrapper {
 
         try {
           const parsed = JSON.parse(payload)
-          const event = parsed.message ?? parsed
-          if (event?.type) {
-            yield event as AgentStreamEvent
+          const event = parseAgentStreamEvent(parsed.message ?? parsed)
+          if (event) {
+            yield event
           }
         } catch {
           // ignore non-json line
@@ -199,8 +215,8 @@ export class VibecodeCliWrapper {
     if (stdoutBuffer.trim()) {
       try {
         const parsed = JSON.parse(stdoutBuffer.trim())
-        const event = parsed.message ?? parsed
-        if (event?.type) yield event as AgentStreamEvent
+        const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
+        if (event) yield event
       } catch {
         // ignore trailing non-json
       }
@@ -222,35 +238,42 @@ export class VibecodeCliWrapper {
   }
 
   async getUser(): Promise<CLIResult<VibecodeUser>> {
-    const result = await this.runJSON<any>(['user'])
+    const result = await this.runJSON<unknown>(['user'])
     if (!result.ok) return result
 
-    const balanceCents = Number(result.data.creditBalance ?? result.data.credits?.balance ?? 0)
+    const parsed = parseCliUserPayload(result.data)
+    if (!parsed) {
+      return {
+        ok: false,
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Malformed user payload from CLI',
+        },
+      }
+    }
 
     return {
       ok: true,
-      data: {
-        id: String(result.data.id),
-        email: String(result.data.email),
-        name:
-          `${result.data.firstName || ''} ${result.data.lastName || ''}`.trim() ||
-          String(result.data.email || ''),
-        plan: (result.data.planTier || 'free') as VibecodeUser['plan'],
-        credits: {
-          balance: balanceCents > 1000 ? balanceCents / 100 : balanceCents,
-          used: Number(result.data.credits?.used ?? 0),
-          limit: result.data.credits?.limit ?? null,
-        },
-      },
+      data: parsed,
     }
   }
 
   async listProjects(): Promise<CLIResult<VibecodeProject[]>> {
-    const result = await this.runJSON<any>(['projects', 'list'])
+    const result = await this.runJSON<unknown>(['projects', 'list'])
     if (!result.ok) return result
 
-    const projects = Array.isArray(result.data) ? result.data : result.data?.projects
-    return { ok: true, data: (projects ?? []) as VibecodeProject[] }
+    const projects = parseCliProjectsPayload(result.data)
+    if (!projects) {
+      return {
+        ok: false,
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Malformed project list payload from CLI',
+        },
+      }
+    }
+
+    return { ok: true, data: projects }
   }
 
   async createProject(
@@ -263,7 +286,7 @@ export class VibecodeCliWrapper {
     const result = await this.runJSON<any>(['projects', 'create', platform, description])
     if (!result.ok) return result
 
-    const id = result.data.projectId ?? result.data.id
+    const id = result.data?.projectId ?? result.data?.id
     if (!id) {
       return {
         ok: false,
@@ -291,8 +314,25 @@ export class VibecodeCliWrapper {
     return this.runJSON(['projects', 'delete', projectId])
   }
 
-  async acquireSandbox(projectId: string): Promise<CLIResult<any>> {
-    return this.runJSON<any>(['sandboxes', 'acquire', projectId])
+  async acquireSandbox(projectId: string): Promise<CLIResult<{ sandbox: any; links?: Record<string, unknown> }>> {
+    const result = await this.runJSON<unknown>(['sandboxes', 'acquire', projectId])
+    if (!result.ok) return result
+
+    const parsed = parseAcquireSandboxPayload(result.data)
+    if (!parsed) {
+      return {
+        ok: false,
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Malformed sandbox acquisition payload from CLI',
+        },
+      }
+    }
+
+    return {
+      ok: true,
+      data: parsed,
+    }
   }
 
   async exportSandbox(projectId: string, outputPath: string): Promise<CLIResult<{ path: string }>> {
@@ -336,7 +376,21 @@ export class VibecodeCliWrapper {
   }
 
   async agentStop(agentUrl: string): Promise<CLIResult<{ stopped: boolean }>> {
-    return this.runJSON(['agent', 'stop', agentUrl])
+    const result = await this.runJSON<unknown>(['agent', 'stop', agentUrl])
+    if (!result.ok) return result
+
+    const parsed = parseAgentStopPayload(result.data)
+    if (!parsed) {
+      return {
+        ok: false,
+        error: {
+          code: 'PARSE_ERROR',
+          message: 'Malformed agent stop payload from CLI',
+        },
+      }
+    }
+
+    return { ok: true, data: parsed }
   }
 
   private parseError(exitCode: number, stdout: string, stderr: string): CLIError {
@@ -369,12 +423,7 @@ export class VibecodeCliWrapper {
       }
     }
 
-    if (
-      combined.includes('network') ||
-      combined.includes('econnrefused') ||
-      combined.includes('timeout') ||
-      combined.includes('dns')
-    ) {
+    if (combined.includes('network') || combined.includes('econnrefused') || combined.includes('timeout') || combined.includes('dns')) {
       return {
         code: 'NETWORK_ERROR',
         message: 'Cannot reach Vibecode servers',
