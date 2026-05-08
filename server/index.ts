@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { bodyLimit } from 'hono/body-limit'
 import path from 'path'
 import { initDB, getDB } from './state/db.ts'
 import { loadConfig, getConfig } from './state/config.ts'
@@ -52,11 +53,29 @@ await cli.resolveBinary()
   }
 }
 
+{
+  const running = getDB().prepare(`SELECT id FROM project_migrations WHERE status IN ('pending', 'running')`).all() as { id: string }[]
+  if (running.length > 0) {
+    for (const { id } of running) {
+      getDB().prepare(`UPDATE project_migrations SET status = 'failed', stage = 'failed', error_message = 'Interrupted by server restart', failed_at = datetime('now') WHERE id = ?`).run(id)
+    }
+    console.log(`[server] marked ${running.length} interrupted migrations as failed`)
+  }
+}
+
 const config = getConfig()
 const PORT = config.port ?? 3847
 
 const app = new Hono()
 const isDev = process.env.NODE_ENV === 'development'
+
+app.use(
+  '*',
+  bodyLimit({
+    maxSize: 10 * 1024 * 1024,
+    onError: (c) => c.json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Payload too large' } }, 413),
+  })
+)
 
 app.use('*', cors({ origin: isDev ? 'http://localhost:5173' : '*', credentials: true }))
 if (isDev) app.use('*', logger())
@@ -110,7 +129,7 @@ if (!isDev) {
   })
 }
 
-Bun.serve({
+Bun.serve<{ type: string; projectId?: string }>({
   port: PORT,
   fetch(req, server) {
     const url = new URL(req.url)
@@ -207,7 +226,7 @@ Bun.serve({
             stream.write(data)
           }
         } else {
-          stream.write(Buffer.from(data as ArrayBuffer))
+          stream.write(Buffer.from(data as any))
         }
       }
     },
