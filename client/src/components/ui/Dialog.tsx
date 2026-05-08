@@ -26,7 +26,7 @@ export function Dialog({ open, onClose, title, description, children, width = 48
   return (
     <div
       ref={backdropRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xl"
       onClick={(e) => { if (e.target === backdropRef.current) onClose() }}
     >
       <div

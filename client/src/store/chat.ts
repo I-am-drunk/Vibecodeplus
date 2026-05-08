@@ -109,12 +109,7 @@ export const useChatStore = create<ChatState>((set) => ({
   finalizeStream: ({ content, terminal, streamId, sessionId }) =>
     set((state) => {
       if (streamId && state.finalizedStreamIds.has(streamId)) {
-        return {
-          isStreaming: false,
-          streamingText: '',
-          activeStreamId: null,
-          streamingSessionId: null,
-        }
+        return state
       }
 
       const hasContent = Boolean(content)

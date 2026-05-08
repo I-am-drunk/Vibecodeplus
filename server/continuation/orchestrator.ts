@@ -24,6 +24,7 @@ import {
 const log = createLogger('continuation-orchestrator')
 
 type CliLike = {
+  deleteProject: typeof defaultCli.deleteProject
   createProject: typeof defaultCli.createProject
   listProjects: typeof defaultCli.listProjects
   acquireSandbox: typeof defaultCli.acquireSandbox
@@ -95,6 +96,20 @@ export class ContinuationOrchestrator {
     }
   }
 
+  private async cleanupOrphanedMigrations(sourceProjectId: string, excludeMigrationId: string) {
+    const { getDB } = require('../state/db.ts');
+    const db = getDB();
+    const rows = db.prepare(`SELECT id, target_project_id FROM project_migrations WHERE source_project_id = ? AND id != ? AND target_project_id IS NOT NULL AND status IN ('failed', 'partial_failed')`).all(sourceProjectId, excludeMigrationId) as Array<{ id: string, target_project_id: string }>;
+    for (const row of rows) {
+      try {
+        await this.deps.cli.deleteProject(row.target_project_id);
+        log.info({ sourceProjectId, targetProjectId: row.target_project_id }, 'cleaned up orphaned target project');
+      } catch (error) {
+        log.error({ targetProjectId: row.target_project_id, error: String(error) }, 'failed to clean up orphaned target project');
+      }
+    }
+  }
+
   start(sourceProjectId: string): ProjectMigrationRecord {
     const latest = getLatestMigrationForSource(sourceProjectId)
 
@@ -111,11 +126,20 @@ export class ContinuationOrchestrator {
       if (canonicalLatest) return canonicalLatest
     }
 
-    const migration = createProjectMigration(sourceProjectId)
-    
-    // REUSE TARGET: If previous failed but had a target, reuse it to prevent orphan clones
+    let reusableTargetId: string | null = null;
     if (latest && (latest.status === 'failed' || latest.status === 'partial_failed') && latest.targetProjectId) {
-      setMigrationTarget(migration.id, latest.targetProjectId)
+      reusableTargetId = latest.targetProjectId;
+      log.info({ sourceProjectId, targetProjectId: reusableTargetId }, 'reusing existing target project from previous attempt');
+    }
+
+    const migration = createProjectMigration(sourceProjectId, reusableTargetId);
+    
+    if (!reusableTargetId) {
+      this.cleanupOrphanedMigrations(sourceProjectId, migration.id).catch(err => {
+        log.error({ sourceProjectId, error: String(err) }, 'Failed to run cleanupOrphanedMigrations');
+      });
+    } else {
+      setMigrationTarget(migration.id, reusableTargetId);
     }
 
     this.ensureExecution(sourceProjectId, migration.id)
@@ -225,7 +249,20 @@ export class ContinuationOrchestrator {
 
     setMigrationStage(migrationId, 'acquiring_target', 'Acquiring sandbox for destination project')
 
-    const sandboxResult = await this.deps.cli.acquireSandbox(targetProjectId)
+    let sandboxResult;
+    try {
+      sandboxResult = await this.deps.cli.acquireSandbox(targetProjectId)
+    } catch (err) {
+      return markMigrationFailed(migrationId, {
+        errorCode: 'ACQUIRE_TARGET_TIMEOUT',
+        errorMessage: String(err),
+        stage: 'acquiring_target',
+        partial: true,
+        sourcePreserved: true,
+        targetProjectId,
+      })
+    }
+    
     if (!sandboxResult.ok) {
       return markMigrationFailed(migrationId, {
         errorCode: `ACQUIRE_TARGET_${sandboxResult.error.code}`,
@@ -280,8 +317,20 @@ export class ContinuationOrchestrator {
 
     setMigrationStage(migrationId, 'verifying_target', 'Verifying destination project visibility')
 
-    const verify = await this.deps.cli.listProjects()
-    const exists = verifyProjectPresenceForContinuation(verify as any, targetProjectId)
+    let verify, exists;
+    try {
+      verify = await this.deps.cli.listProjects()
+      exists = verifyProjectPresenceForContinuation(verify as any, targetProjectId)
+    } catch (err) {
+      return markMigrationFailed(migrationId, {
+        errorCode: 'VERIFY_TARGET_FAILED',
+        errorMessage: String(err),
+        stage: 'verifying_target',
+        partial: true,
+        sourcePreserved: true,
+        targetProjectId,
+      })
+    }
 
     if (!exists) {
       const message = verify.ok

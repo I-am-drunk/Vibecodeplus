@@ -377,7 +377,10 @@ export class VibecodeCliWrapper {
     
     const tempDir = await mkdtemp(join(tmpdir(), 'vibecode-prompt-'))
     const promptPath = join(tempDir, 'prompt.txt')
-    await writeFile(promptPath, prompt, 'utf-8')
+    
+    const byteSize = Buffer.byteLength(prompt, 'utf-8')
+    log.info({ byteSize }, 'Writing massive prompt to temporary file')
+    await writeFile(promptPath, prompt, { encoding: 'utf-8' })
 
     try {
       yield* this.runStream(['agent', 'send', '--model', model, '--output', 'json', '--prompt-file', promptPath, agentUrl], {

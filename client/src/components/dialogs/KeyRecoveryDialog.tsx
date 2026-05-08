@@ -186,7 +186,7 @@ export function KeyRecoveryDialog({ open, onClose, onRecovered, projectId, reaso
             )}
 
             <p className="text-center text-[11px]" style={{ color: 'rgba(235,235,245,0.2)' }}>
-              Your project, sessions, and files are preserved
+              Your project, sessions, and files are securely preserved.
             </p>
           </div>
         </div>

@@ -43,7 +43,7 @@ describe('continuation migration safety', () => {
     db.prepare('INSERT INTO projects (id, name) VALUES (?, ?)').run('source-1', 'Source')
     db.prepare('INSERT INTO projects (id, name) VALUES (?, ?)').run('target-1', 'Target')
 
-    const migration = createProjectMigration('source-1', db)
+    const migration = createProjectMigration('source-1', null, db)
     setMigrationTarget(migration.id, 'target-1', db)
 
     const partial = markMigrationFailed(
@@ -78,7 +78,7 @@ describe('continuation migration safety', () => {
     db.exec(`INSERT OR IGNORE INTO projects (id, name) VALUES ('target-reuse', 'Target')`)
     
     // Fake a previous failed migration
-    const failedMigration = createProjectMigration('source-reuse', db)
+    const failedMigration = createProjectMigration('source-reuse', null, db)
     setMigrationTarget(failedMigration.id, 'target-reuse', db)
     markMigrationFailed(failedMigration.id, { errorCode: 'ERR', errorMessage: 'failed', partial: true }, db)
 

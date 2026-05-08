@@ -23,7 +23,7 @@ type WatcherContext = {
 const log = createLogger('watcher')
 const DEFAULT_POLL_MS = 15_000
 const BASE_COOLDOWN_MS = 10_000
-const MAX_COOLDOWN_MS = 120_000
+const MAX_COOLDOWN_MS = 300_000
 
 function isForbiddenError(message: string) {
   const normalized = message.toLowerCase()
@@ -68,7 +68,7 @@ export class FileChangeWatcher {
       context.cooldownTimer = undefined
     }
 
-    if (featureFlags.watcher_fsm_v2) {
+    if (true) { // enforce fsm
       context.interval = setInterval(() => {
         void this.poll(projectId)
       }, pollMs)
@@ -184,10 +184,7 @@ export class FileChangeWatcher {
     context.lastError = message
     context.state = 'blocked_forbidden'
 
-    // Bounded backoff with jitter
-    const baseCooldown = Math.min(BASE_COOLDOWN_MS * 2 ** (context.forbiddenFailures - 1), MAX_COOLDOWN_MS)
-    const jitter = Math.random() * 2000 // 0-2s jitter
-    const cooldownMs = baseCooldown + jitter
+    const cooldownMs = MAX_COOLDOWN_MS; // massive backoff
     context.cooldownMs = cooldownMs
 
     this.logCompact(projectId, `blocked:${context.forbiddenFailures}:${message}`, {
@@ -196,10 +193,10 @@ export class FileChangeWatcher {
       cooldownMs,
     })
 
-    context.state = 'cooldown'
+    // Remain in blocked_forbidden state
     context.cooldownTimer = setTimeout(() => {
       const latest = this.contexts.get(projectId)
-      if (!latest || latest.state !== 'cooldown') return
+      if (!latest || latest.state !== 'blocked_forbidden') return
       latest.cooldownTimer = undefined
       latest.state = 'stopped'
       this.start(projectId, latest.pollMs)

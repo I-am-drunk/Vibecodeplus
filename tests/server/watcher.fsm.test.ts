@@ -18,7 +18,7 @@ describe('watcher forbidden/backoff containment', () => {
       expect(['blocked_forbidden', 'cooldown', 'running']).toContain(state.state)
       expect(state.forbiddenFailures).toBeGreaterThan(0)
       expect(state.cooldownMs).toBeGreaterThan(0)
-      expect(state.cooldownMs).toBeLessThanOrEqual(122000) // bounded backoff + 2s jitter
+      expect(state.cooldownMs).toEqual(300000) // bounded backoff + 2s jitter
     } finally {
       fileWatcher.stop('project-auth-fail')
       ;(sshManager as any).exec = originalExec
