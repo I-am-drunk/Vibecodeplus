@@ -99,7 +99,16 @@ export function useProjectEvents(projectId: string | null) {
 
             if (!payload || !sessionId || !streamId) break
 
-            const accepted = streamGuard.acceptEvent(sessionId, streamId, sequence)
+            let accepted = streamGuard.acceptEvent(sessionId, streamId, sequence)
+            if (!accepted.accepted && accepted.reason === 'missing') {
+              const started = streamGuard.start(sessionId, streamId, Math.max(sequence - 1, 0))
+              if (started.accepted) {
+                chatStore.setActiveSession(sessionId)
+                chatStore.beginStream({ sessionId, streamId })
+                accepted = streamGuard.acceptEvent(sessionId, streamId, sequence)
+              }
+            }
+
             if (!accepted.accepted) break
 
             const textChunk = extractTextChunk(payload)
@@ -141,6 +150,7 @@ export function useProjectEvents(projectId: string | null) {
               streamId,
               content,
               terminal,
+              errorMessage: typeof event.errorMessage === 'string' ? event.errorMessage : undefined,
             })
             streamBufferById.delete(streamId)
             streamGuard.clearSession(sessionId)
@@ -168,6 +178,7 @@ export function useProjectEvents(projectId: string | null) {
               streamId,
               content,
               terminal,
+              errorMessage: typeof event.errorMessage === 'string' ? event.errorMessage : undefined,
             })
             streamBufferById.delete(streamId)
             streamGuard.clearSession(sessionId)

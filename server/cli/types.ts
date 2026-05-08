@@ -53,7 +53,7 @@ export type AgentStreamEvent =
   | { type: 'text'; subtype: 'start' | 'delta' | 'full' | 'stop'; text?: string }
   | { type: 'thinking'; thinking?: { summary?: string } }
   | { type: 'tool_use'; tool_use: { id: string; name: string; input: any } }
-  | { type: 'tool_result'; tool_result: { tool_use_id: string; content: string } }
+  | { type: 'tool_result'; tool_result: { tool_use_id: string; content: string; is_error?: boolean } }
   | { type: 'commit'; commit: { checksum: string; summary: string } }
   | { type: 'done'; input_tokens: number; output_tokens: number; duration_millis: number }
   | { type: 'error'; error: string; code?: string }

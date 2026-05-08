@@ -3,6 +3,7 @@ import { join } from 'path'
 import { sshManager } from '../ssh/manager.ts'
 import { getDB } from '../state/db.ts'
 import { getDataDir } from '../state/config.ts'
+import { createLogger } from '../lib/logger.ts'
 
 const IGNORE = new Set(['node_modules', '.git', '.next', 'dist', '__pycache__', '.cache', 'coverage', '.turbo'])
 const WS = '/home/user/workspace'
@@ -10,6 +11,7 @@ const DEBOUNCE_MS = 6000
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
 const active = new Set<string>()
+const log = createLogger('continuation-capture')
 
 export function scheduleCapture(projectId: string) {
   const prev = timers.get(projectId)
@@ -30,10 +32,10 @@ export async function captureNow(projectId: string): Promise<number> {
     getDB().prepare(
       `UPDATE projects SET snapshot_dir = ?, snapshot_at = datetime('now') WHERE id = ?`
     ).run(dir, projectId)
-    console.log(`[capture] ${projectId}: ${count} files`)
+    log.debug({ projectId, count }, 'captured project snapshot')
     return count
   } catch (e) {
-    console.warn('[capture] failed:', projectId, e)
+    log.warn({ projectId, error: String(e) }, 'failed to capture project snapshot')
     return 0
   } finally {
     active.delete(projectId)

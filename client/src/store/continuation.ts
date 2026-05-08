@@ -3,6 +3,8 @@ import { create } from 'zustand'
 export type MigrationStage =
   | 'queued'
   | 'creating_target'
+  | 'reusing_target'
+  | 'cleaning_orphan_target'
   | 'acquiring_target'
   | 'transferring_snapshot'
   | 'verifying_target'

@@ -14,6 +14,7 @@ type WatcherContext = {
   pollMs: number
   forbiddenFailures: number
   cooldownMs: number
+  blockedAt?: number
   interval?: ReturnType<typeof setInterval>
   cooldownTimer?: ReturnType<typeof setTimeout>
   lastError?: string
@@ -24,6 +25,7 @@ const log = createLogger('watcher')
 const DEFAULT_POLL_MS = 15_000
 const BASE_COOLDOWN_MS = 10_000
 const MAX_COOLDOWN_MS = 120_000
+const MAX_FORBIDDEN_FAILURES_BEFORE_BLOCK = 4
 
 function isForbiddenError(message: string) {
   const normalized = message.toLowerCase()
@@ -44,10 +46,18 @@ export class FileChangeWatcher {
   private contexts = new Map<string, WatcherContext>()
   private handlers = new Set<ChangeHandler>()
 
-  start(projectId: string, pollMs = DEFAULT_POLL_MS) {
+  start(projectId: string, pollMs = DEFAULT_POLL_MS, opts?: { resetFailures?: boolean }) {
     const existing = this.contexts.get(projectId)
-    if (existing?.state === 'running' || existing?.state === 'cooldown' || existing?.state === 'blocked') {
+    const forceReset = !!opts?.resetFailures
+
+    if (existing?.state === 'running' || existing?.state === 'cooldown') {
       return
+    }
+
+    if (existing?.state === 'blocked' && !forceReset) {
+      if (!sshManager.isConnected(projectId)) {
+        return
+      }
     }
 
     const context: WatcherContext = existing ?? {
@@ -58,6 +68,12 @@ export class FileChangeWatcher {
       cooldownMs: 0,
     }
 
+    if (forceReset || context.state === 'blocked') {
+      context.forbiddenFailures = 0
+      context.cooldownMs = 0
+      context.blockedAt = undefined
+    }
+
     context.pollMs = pollMs
     context.state = 'running'
     context.lastError = undefined
@@ -66,6 +82,11 @@ export class FileChangeWatcher {
     if (context.cooldownTimer) {
       clearTimeout(context.cooldownTimer)
       context.cooldownTimer = undefined
+    }
+
+    if (context.interval) {
+      clearInterval(context.interval)
+      context.interval = undefined
     }
 
     if (featureFlags.watcher_fsm_v2) {
@@ -80,6 +101,23 @@ export class FileChangeWatcher {
 
     this.contexts.set(projectId, context)
     void sshManager.exec(projectId, 'touch /tmp/.vibecode-check').catch(() => {})
+  }
+
+  reset(projectId: string) {
+    const context = this.contexts.get(projectId)
+    if (!context) return
+
+    context.forbiddenFailures = 0
+    context.cooldownMs = 0
+    context.blockedAt = undefined
+    context.lastError = undefined
+    context.lastLoggedSignature = undefined
+
+    if (context.state === 'blocked') {
+      context.state = 'stopped'
+    }
+
+    this.contexts.set(projectId, context)
   }
 
   private async poll(projectId: string) {
@@ -105,6 +143,7 @@ export class FileChangeWatcher {
 
       context.forbiddenFailures = 0
       context.cooldownMs = 0
+      context.blockedAt = undefined
       context.lastError = undefined
 
       const changes: FileChange[] = files.map((filePath) => ({
@@ -182,10 +221,27 @@ export class FileChangeWatcher {
 
     context.forbiddenFailures += 1
     context.lastError = message
-    context.state = 'blocked'
+
+    if (context.forbiddenFailures >= MAX_FORBIDDEN_FAILURES_BEFORE_BLOCK) {
+      context.state = 'blocked'
+      context.cooldownMs = 0
+      context.blockedAt = Date.now()
+
+      if (context.cooldownTimer) {
+        clearTimeout(context.cooldownTimer)
+        context.cooldownTimer = undefined
+      }
+
+      this.logCompact(projectId, `blocked:hard:${context.forbiddenFailures}:${message}`, {
+        projectId,
+        failures: context.forbiddenFailures,
+      })
+      return
+    }
 
     const cooldownMs = Math.min(BASE_COOLDOWN_MS * 2 ** (context.forbiddenFailures - 1), MAX_COOLDOWN_MS)
     context.cooldownMs = cooldownMs
+    context.state = 'cooldown'
 
     this.logCompact(projectId, `blocked:${context.forbiddenFailures}:${message}`, {
       projectId,
@@ -193,7 +249,10 @@ export class FileChangeWatcher {
       cooldownMs,
     })
 
-    context.state = 'cooldown'
+    if (context.cooldownTimer) {
+      clearTimeout(context.cooldownTimer)
+    }
+
     context.cooldownTimer = setTimeout(() => {
       const latest = this.contexts.get(projectId)
       if (!latest || latest.state !== 'cooldown') return
@@ -210,6 +269,11 @@ export class FileChangeWatcher {
     if (context.lastLoggedSignature === signature) return
     context.lastLoggedSignature = signature
 
+    if (signature.startsWith('blocked:hard')) {
+      log.warn(payload, 'watcher blocked after repeated forbidden/auth failures')
+      return
+    }
+
     if (signature.startsWith('blocked')) {
       log.warn(payload, 'watcher entered cooldown after forbidden/auth failure')
       return
@@ -220,13 +284,14 @@ export class FileChangeWatcher {
 
   remapProject(sourceProjectId: string, targetProjectId: string) {
     const source = this.contexts.get(sourceProjectId)
-    const shouldStartTarget = !!source && source.state !== 'stopped'
+    const shouldStartTarget = !!source && (source.state === 'running' || source.state === 'cooldown')
     const pollMs = source?.pollMs ?? DEFAULT_POLL_MS
 
+    this.stop(targetProjectId)
     this.stop(sourceProjectId)
 
     if (shouldStartTarget) {
-      this.start(targetProjectId, pollMs)
+      this.start(targetProjectId, pollMs, { resetFailures: true })
       log.info({ sourceProjectId, targetProjectId }, 'watcher remapped to migrated project')
     }
   }
@@ -271,6 +336,7 @@ export class FileChangeWatcher {
         forbiddenFailures: 0,
         cooldownMs: 0,
         pollMs: DEFAULT_POLL_MS,
+        blockedAt: null as number | null,
       }
     }
 
@@ -279,6 +345,7 @@ export class FileChangeWatcher {
       forbiddenFailures: context.forbiddenFailures,
       cooldownMs: context.cooldownMs,
       pollMs: context.pollMs,
+      blockedAt: context.blockedAt ?? null,
       lastError: context.lastError,
     }
   }

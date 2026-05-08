@@ -66,6 +66,7 @@ class SSHManager {
   private connections = new Map<string, Client>()
   private credentials = new Map<string, NormalizedCredentials>()
   private pending = new Map<string, Promise<Client>>()
+  private pendingCredentialRefresh = new Map<string, Promise<NormalizedCredentials>>()
   private failures = new Map<string, FailureState>()
   private leaseCounters = new Map<string, number>()
   private activeLeases = new Map<string, number>()
@@ -73,6 +74,7 @@ class SSHManager {
   primeCredentials(projectId: string, rawCredentials: SandboxCredentials | Record<string, unknown>) {
     try {
       this.credentials.set(projectId, normalizeSandboxCredentials(rawCredentials))
+      this.pendingCredentialRefresh.delete(projectId)
       this.failures.delete(projectId)
     } catch (err) {
       log.warn({ projectId, error: String(err) }, 'failed to prime SSH credentials')
@@ -166,6 +168,7 @@ class SSHManager {
     this.clearConnection(projectId)
     this.credentials.delete(projectId)
     this.pending.delete(projectId)
+    this.pendingCredentialRefresh.delete(projectId)
     this.activeLeases.delete(projectId)
   }
 
@@ -179,6 +182,7 @@ class SSHManager {
     }
     this.credentials.clear()
     this.pending.clear()
+    this.pendingCredentialRefresh.clear()
     this.failures.clear()
     this.activeLeases.clear()
   }
@@ -220,15 +224,27 @@ class SSHManager {
       if (cached) return cached
     }
 
-    const result = await cli.acquireSandbox(projectId)
-    if (!result.ok) {
-      throw new Error(result.error.message || 'Failed to acquire sandbox credentials')
+    const pendingRefresh = this.pendingCredentialRefresh.get(projectId)
+    if (pendingRefresh) {
+      return pendingRefresh
     }
 
-    const rawCreds = (result.data as any).sandbox ?? result.data
-    const creds = normalizeSandboxCredentials(rawCreds)
-    this.credentials.set(projectId, creds)
-    return creds
+    const refreshPromise = (async () => {
+      const result = await cli.acquireSandbox(projectId)
+      if (!result.ok) {
+        throw new Error(result.error.message || 'Failed to acquire sandbox credentials')
+      }
+
+      const rawCreds = result.data.sandbox ?? result.data
+      const creds = normalizeSandboxCredentials(rawCreds)
+      this.credentials.set(projectId, creds)
+      return creds
+    })().finally(() => {
+      this.pendingCredentialRefresh.delete(projectId)
+    })
+
+    this.pendingCredentialRefresh.set(projectId, refreshPromise)
+    return refreshPromise
   }
 
   private nextLeaseId(projectId: string): number {

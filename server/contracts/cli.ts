@@ -111,7 +111,12 @@ export function parseSandboxCredentials(payload: unknown): SandboxCredentials | 
   }
 }
 
-export function parseAcquireSandboxPayload(payload: unknown): { sandbox: SandboxCredentials; links?: Record<string, unknown> } | null {
+export type SandboxLinks = {
+  agentUrl?: string
+  raw?: Record<string, unknown>
+}
+
+export function parseAcquireSandboxPayload(payload: unknown): { sandbox: SandboxCredentials; links?: SandboxLinks } | null {
   if (!isRecord(payload)) return null
 
   const sandboxPayload = isRecord(payload.sandbox) ? payload.sandbox : payload
@@ -120,8 +125,39 @@ export function parseAcquireSandboxPayload(payload: unknown): { sandbox: Sandbox
 
   return {
     sandbox,
-    links: isRecord(payload.links) ? payload.links : undefined,
+    links: parseSandboxLinks(payload.links),
   }
+}
+
+export function parseSandboxLinks(payload: unknown): SandboxLinks | undefined {
+  if (!isRecord(payload)) return undefined
+
+  const rawAgent = isRecord(payload.agentUrl) ? payload.agentUrl : payload
+  const maybeUrl = asString(rawAgent.url ?? rawAgent.agentUrl)
+
+  return {
+    agentUrl: maybeUrl ?? undefined,
+    raw: payload,
+  }
+}
+
+export function parseCreateProjectPayload(payload: unknown): { id: string } | null {
+  if (!isRecord(payload)) return null
+
+  const projectId = asString(payload.projectId ?? payload.id)
+  if (!projectId) return null
+
+  return {
+    id: projectId,
+  }
+}
+
+export function unwrapCliMessageEnvelope(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload
+  if (!('message' in payload)) return payload
+
+  const nested = payload.message
+  return nested === undefined ? payload : nested
 }
 
 const STREAM_EVENT_TYPES = new Set([
@@ -183,6 +219,7 @@ export function parseAgentStreamEvent(payload: unknown): AgentStreamEvent | null
       tool_result: {
         tool_use_id: toolUseId,
         content: asString(result.content) ?? JSON.stringify(result.content ?? ''),
+        is_error: !!result.is_error,
       },
     }
   }

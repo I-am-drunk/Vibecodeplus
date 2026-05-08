@@ -13,7 +13,7 @@ import {
   getProjectMigration,
   markMigrationCompleted,
   markMigrationFailed,
-  resolveCanonicalProjectId,
+  requeueMigration,
   setMigrationStage,
   setMigrationTarget,
   upsertProjectAlias,
@@ -37,6 +37,7 @@ type SshLike = {
 
 type WatcherLike = {
   remapProject: typeof defaultFileWatcher.remapProject
+  stop: typeof defaultFileWatcher.stop
 }
 
 type Dependencies = {
@@ -61,7 +62,6 @@ type SourceProjectRow = {
   description: string | null
   default_model: string | null
   snapshot_dir: string | null
-  api_key_hash: string | null
 }
 
 function hashKey(key: string): string {
@@ -70,6 +70,10 @@ function hashKey(key: string): string {
 
 function isRunningStatus(status: MigrationStatus) {
   return status === 'pending' || status === 'running'
+}
+
+function isRetryableStatus(status: MigrationStatus) {
+  return status === 'failed' || status === 'partial_failed'
 }
 
 export function verifyProjectPresenceForContinuation(
@@ -82,6 +86,44 @@ export function verifyProjectPresenceForContinuation(
   return listProjectsResult.data.some((project) => {
     return typeof project === 'object' && project !== null && (project as any).id === targetProjectId
   })
+}
+
+export function canSafelyCleanupOrphanTarget(opts: {
+  db: ReturnType<typeof getDB>
+  sourceProjectId: string
+  targetProjectId: string
+  migrationId: string
+}) {
+  const aliasRef = opts.db
+    .prepare('SELECT source_project_id FROM project_aliases WHERE canonical_project_id = ? LIMIT 1')
+    .get(opts.targetProjectId)
+  if (aliasRef) return false
+
+  const completedRef = opts.db
+    .prepare(`SELECT id FROM project_migrations WHERE target_project_id = ? AND status = 'completed' LIMIT 1`)
+    .get(opts.targetProjectId)
+  if (completedRef) return false
+
+  const usedByOtherSource = opts.db
+    .prepare(
+      `
+      SELECT id
+      FROM project_migrations
+      WHERE target_project_id = ?
+        AND source_project_id != ?
+        AND id != ?
+      LIMIT 1
+    `,
+    )
+    .get(opts.targetProjectId, opts.sourceProjectId, opts.migrationId)
+
+  if (usedByOtherSource) return false
+  return true
+}
+
+function cleanupLocalOrphanTarget(db: ReturnType<typeof getDB>, targetProjectId: string) {
+  db.prepare('DELETE FROM sessions WHERE project_id = ?').run(targetProjectId)
+  db.prepare('DELETE FROM projects WHERE id = ?').run(targetProjectId)
 }
 
 export class ContinuationOrchestrator {
@@ -105,13 +147,29 @@ export class ContinuationOrchestrator {
       return latest
     }
 
-    const resolved = resolveCanonicalProjectId(sourceProjectId)
-    if (resolved.mappedFromProjectId && resolved.canonicalProjectId !== sourceProjectId) {
-      const canonicalLatest = getLatestMigrationForSource(sourceProjectId)
-      if (canonicalLatest) return canonicalLatest
+    if (latest && isRetryableStatus(latest.status) && latest.targetProjectId) {
+      const retried = requeueMigration(latest.id, {
+        stage: 'reusing_target',
+        stageMessage: 'Retry requested — attempting to reuse existing destination project',
+      })
+      this.ensureExecution(sourceProjectId, retried.id)
+      return retried
     }
 
-    const migration = createProjectMigration(sourceProjectId)
+    let migration: ProjectMigrationRecord
+
+    try {
+      migration = createProjectMigration(sourceProjectId)
+    } catch (error) {
+      const fallback = getLatestMigrationForSource(sourceProjectId)
+      if (fallback && isRunningStatus(fallback.status)) {
+        this.ensureExecution(sourceProjectId, fallback.id)
+        return fallback
+      }
+
+      throw error
+    }
+
     this.ensureExecution(sourceProjectId, migration.id)
     return migration
   }
@@ -177,23 +235,73 @@ export class ContinuationOrchestrator {
     const continuationName = source.name || 'Continued Project'
     const continuationDescription = source.description || continuationName
 
-    setMigrationStage(migrationId, 'creating_target', 'Creating destination project')
-    const createResult = await this.deps.cli.createProject(continuationName, {
-      description: continuationDescription,
-    })
+    const current = getProjectMigration(migrationId)
+    let targetProjectId = current?.targetProjectId ?? null
 
-    if (!createResult.ok) {
-      return markMigrationFailed(migrationId, {
-        errorCode: `CREATE_TARGET_${createResult.error.code}`,
-        errorMessage: createResult.error.message || 'Failed to create continuation project',
-        stage: 'failed',
-        partial: false,
-        sourcePreserved: true,
-      })
+    if (targetProjectId) {
+      setMigrationStage(migrationId, 'reusing_target', 'Reusing previously created destination project')
+      const verifyExisting = await this.deps.cli.listProjects()
+      const exists = verifyProjectPresenceForContinuation(verifyExisting as any, targetProjectId)
+
+      if (!exists) {
+        if (
+          verifyExisting.ok &&
+          canSafelyCleanupOrphanTarget({
+            db,
+            sourceProjectId,
+            targetProjectId,
+            migrationId,
+          })
+        ) {
+          setMigrationStage(migrationId, 'cleaning_orphan_target', 'Cleaning stale orphan destination before retry')
+          this.deps.fileWatcher.stop(targetProjectId)
+          await this.deps.sshManager.closeConnection(targetProjectId).catch(() => {})
+          agentUrls.delete(targetProjectId)
+          cleanupLocalOrphanTarget(db, targetProjectId)
+          targetProjectId = null
+        } else if (verifyExisting.ok) {
+          return markMigrationFailed(migrationId, {
+            errorCode: 'TARGET_ORPHAN_UNSAFE',
+            errorMessage: 'Destination project is missing remotely and cannot be safely cleaned automatically',
+            stage: 'failed',
+            partial: true,
+            sourcePreserved: true,
+            targetProjectId,
+          })
+        } else {
+          return markMigrationFailed(migrationId, {
+            errorCode: `TARGET_VERIFY_${verifyExisting.error.code}`,
+            errorMessage: verifyExisting.error.message || 'Could not verify previously created destination project',
+            stage: 'verifying_target',
+            partial: true,
+            sourcePreserved: true,
+            targetProjectId,
+          })
+        }
+      }
     }
 
-    const targetProjectId = createResult.data.id
-    setMigrationTarget(migrationId, targetProjectId)
+    if (!targetProjectId) {
+      setMigrationStage(migrationId, 'creating_target', 'Creating destination project')
+      const createResult = await this.deps.cli.createProject(continuationName, {
+        description: continuationDescription,
+      })
+
+      if (!createResult.ok) {
+        return markMigrationFailed(migrationId, {
+          errorCode: `CREATE_TARGET_${createResult.error.code}`,
+          errorMessage: createResult.error.message || 'Failed to create continuation project',
+          stage: 'failed',
+          partial: false,
+          sourcePreserved: true,
+        })
+      }
+
+      targetProjectId = createResult.data.id
+      setMigrationTarget(migrationId, targetProjectId)
+    } else {
+      setMigrationTarget(migrationId, targetProjectId)
+    }
 
     db.prepare(`
       INSERT INTO projects (id, name, description, default_model, api_key_hash, created_at, updated_at)
@@ -227,7 +335,6 @@ export class ContinuationOrchestrator {
     }
 
     const sandbox = sandboxResult.data.sandbox
-    const links = sandboxResult.data.links
 
     try {
       this.deps.sshManager.primeCredentials(targetProjectId, sandbox)
@@ -243,8 +350,8 @@ export class ContinuationOrchestrator {
       })
     }
 
-    if ((links as any)?.agentUrl?.url) {
-      agentUrls.set(targetProjectId, String((links as any).agentUrl.url))
+    if (sandboxResult.data.links?.agentUrl) {
+      agentUrls.set(targetProjectId, sandboxResult.data.links.agentUrl)
     }
 
     let warning: string | null = null
@@ -294,14 +401,10 @@ export class ContinuationOrchestrator {
     agentUrls.delete(sourceProjectId)
 
     setMigrationStage(migrationId, 'completed', 'Migration complete')
-    return markMigrationCompleted(
-      migrationId,
-      targetProjectId,
-      {
-        warning,
-        sourcePreserved: true,
-      },
-    )
+    return markMigrationCompleted(migrationId, targetProjectId, {
+      warning,
+      sourcePreserved: true,
+    })
   }
 }
 

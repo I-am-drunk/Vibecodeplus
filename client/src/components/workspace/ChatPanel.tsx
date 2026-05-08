@@ -19,6 +19,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
     isStreaming,
     activeSessionId,
     creditsExhausted,
+    streamError,
     setCreditsExhausted,
     setSessions,
     setMessages,
@@ -166,6 +167,23 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
             className="text-[12px] text-[#ff453a]/60 hover:text-[#ff453a] transition-colors"
           >
             ✕
+          </button>
+        </div>
+      )}
+
+      {streamError && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-[#ff9f0a]/20 bg-[#ff9f0a]/[0.08]">
+          <span className="text-[12px] text-[#ff9f0a] truncate">{streamError}</span>
+          <button
+            onClick={() => {
+              const lastUserIndex = [...messages].reverse().findIndex((message) => message.role === 'user')
+              if (lastUserIndex >= 0) {
+                void retryFromIndex(messages.length - 1 - lastUserIndex)
+              }
+            }}
+            className="text-[12px] text-[#ff9f0a] underline hover:text-[#ffb340]"
+          >
+            Retry
           </button>
         </div>
       )}

@@ -49,7 +49,7 @@ export class StreamRegistry {
     }
     this.byProject.get(projectId)!.add(sessionId)
 
-    log.debug({ sessionId, projectId, streamId: stream.streamId, total: this.bySession.size }, 'stream registered')
+    log.trace({ sessionId, projectId, streamId: stream.streamId, total: this.bySession.size }, 'stream registered')
     return stream
   }
 
@@ -74,7 +74,7 @@ export class StreamRegistry {
       }
     }
 
-    log.debug({ sessionId, streamId: stream.streamId, total: this.bySession.size }, 'stream unregistered')
+    log.trace({ sessionId, streamId: stream.streamId, total: this.bySession.size }, 'stream unregistered')
   }
 
   nextSequence(sessionId: string, streamId: string): number | null {
@@ -102,6 +102,7 @@ export class StreamRegistry {
   requestAbort(sessionId: string, reason = 'aborted'): { accepted: boolean; stream: ActiveStream | null } {
     const stream = this.bySession.get(sessionId)
     if (!stream) return { accepted: false, stream: null }
+    if (stream.terminalState) return { accepted: false, stream }
 
     stream.abortReason = reason
 

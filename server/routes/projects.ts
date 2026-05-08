@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { createHash } from 'crypto'
 import { cli } from '../cli/wrapper.ts'
+import type { VibecodeProject } from '../cli/types.ts'
 import { getDB } from '../state/db.ts'
 import { loadStoredAuth } from '../state/auth.ts'
 import { sshManager } from '../ssh/manager.ts'
@@ -54,7 +55,7 @@ function getCurrentAuthHash() {
   return auth?.key ? hashKey(auth.key) : null
 }
 
-function toProjectResponse(row: ProjectRow, remote?: any, currentHash?: string | null) {
+function toProjectResponse(row: ProjectRow, remote?: VibecodeProject, currentHash?: string | null) {
   const differentKey = !!(row.api_key_hash && currentHash && row.api_key_hash !== currentHash)
 
   return {
@@ -71,7 +72,7 @@ function toProjectResponse(row: ProjectRow, remote?: any, currentHash?: string |
   }
 }
 
-function resolveRequestedProject(projectId: string) {
+export function resolveRequestedProject(projectId: string) {
   const resolved = resolveCanonicalProjectId(projectId)
   return {
     canonicalProjectId: resolved.canonicalProjectId,
@@ -79,11 +80,11 @@ function resolveRequestedProject(projectId: string) {
   }
 }
 
-async function listRemoteProjectsSafe() {
+async function listRemoteProjectsSafe(): Promise<Map<string, VibecodeProject>> {
   const result = await cli.listProjects()
   if (!result.ok) {
     log.warn({ error: result.error.message }, 'failed to list remote projects')
-    return new Map<string, any>()
+    return new Map<string, VibecodeProject>()
   }
 
   return new Map(result.data.map((project) => [project.id, project]))
@@ -306,7 +307,7 @@ projectsRouter.post('/:id/workspace', async (c) => {
     }
 
     const sandbox = acquire.data.sandbox
-    const links = acquire.data.links as any
+    const links = acquire.data.links
 
     sshManager.primeCredentials(projectId, sandbox)
 
@@ -316,8 +317,8 @@ projectsRouter.post('/:id/workspace', async (c) => {
       throw dependencyError(`SSH connect failed: ${error instanceof Error ? error.message : String(error)}`)
     }
 
-    if (links?.agentUrl?.url) {
-      agentUrls.set(projectId, String(links.agentUrl.url))
+    if (links?.agentUrl) {
+      agentUrls.set(projectId, links.agentUrl)
     }
 
     const currentHash = getCurrentAuthHash()
@@ -339,8 +340,8 @@ projectsRouter.post('/:id/workspace', async (c) => {
           port: sandbox?.port,
           user: sandbox?.user,
         },
-        agentUrl: links?.agentUrl?.url,
-        links,
+        agentUrl: links?.agentUrl,
+        links: links?.raw,
         canonicalProjectId: projectId,
         mappedFromProjectId: resolved.mappedFromProjectId,
       }),

@@ -12,7 +12,7 @@ import {
   getProjectMigration,
   resolveCanonicalProjectId,
 } from '../state/migrations.ts'
-import { continuationOrchestrator } from '../continuation/orchestrator.ts'
+import { continuationOrchestrator, verifyProjectPresenceForContinuation } from '../continuation/orchestrator.ts'
 import { parseContinuationEnactRequest, readBody } from '../contracts/routes.ts'
 import { AppError, badRequest, jsonError, notFound, success, unauthorized } from '../lib/errors.ts'
 import { agentUrls } from '../state/agents.ts'
@@ -176,7 +176,7 @@ async function runLegacyEnact(sourceProjectId: string, source: ProjectRow, authK
 
   const verify = await cli.listProjects()
   if (verify.ok) {
-    const exists = verify.data.some((project) => project.id === newProjectId)
+    const exists = verifyProjectPresenceForContinuation(verify as any, newProjectId)
     if (!exists) {
       throw new AppError('MIGRATION_FAILED', 'Project creation could not be verified. Please try again.', 500)
     }
@@ -201,13 +201,13 @@ async function runLegacyEnact(sourceProjectId: string, source: ProjectRow, authK
   const sandboxResult = await cli.acquireSandbox(newProjectId)
   if (sandboxResult.ok) {
     const sandbox = sandboxResult.data.sandbox
-    const links = sandboxResult.data.links as any
+    const links = sandboxResult.data.links
 
     sshManager.primeCredentials(newProjectId, sandbox)
     await sshManager.getConnection(newProjectId)
 
-    if (links?.agentUrl?.url) {
-      agentUrls.set(newProjectId, String(links.agentUrl.url))
+    if (links?.agentUrl) {
+      agentUrls.set(newProjectId, links.agentUrl)
     }
 
     if (source.snapshot_dir) {

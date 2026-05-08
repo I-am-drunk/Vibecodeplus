@@ -23,11 +23,12 @@ export function expectRecord(value: unknown, message = 'Request body must be an 
 export function readString(
   record: Record<string, unknown>,
   field: string,
-  opts?: { required?: boolean; trim?: boolean; minLength?: number },
+  opts?: { required?: boolean; trim?: boolean; minLength?: number; maxLength?: number },
 ): string | undefined {
   const required = opts?.required ?? false
   const trim = opts?.trim ?? true
   const minLength = opts?.minLength ?? 0
+  const maxLength = opts?.maxLength
 
   const raw = record[field]
   if (raw === undefined || raw === null) {
@@ -40,13 +41,18 @@ export function readString(
   }
 
   const value = trim ? raw.trim() : raw
-  if (required && value.length < minLength) {
-    throw badRequest(`Field \"${field}\" must be at least ${minLength} characters`) 
-  }
-
   if (!required && value.length === 0) return undefined
+
   if (value.length < minLength) {
     throw badRequest(`Field \"${field}\" must be at least ${minLength} characters`)
+  }
+
+  if (typeof maxLength === 'number' && value.length > maxLength) {
+    throw badRequest(`Field \"${field}\" must be at most ${maxLength} characters`, {
+      field,
+      maxLength,
+      actualLength: value.length,
+    })
   }
 
   return value
