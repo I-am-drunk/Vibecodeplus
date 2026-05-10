@@ -229,6 +229,37 @@ export function markMigrationFailed(
   return getProjectMigration(migrationId, db)!
 }
 
+/**
+ * QA-064: Cancel a running migration mid-copy.
+ * Marks the migration as failed with MIGRATION_CANCELLED error code,
+ * rolls back any alias that was created, and preserves the source project.
+ * Returns the updated migration record, or null if the migration was not
+ * in a cancellable state.
+ */
+export function cancelMigration(migrationId: string, dbInput?: Database): ProjectMigrationRecord | null {
+  const db = dbOrDefault(dbInput)
+  const migration = getProjectMigration(migrationId, db)
+
+  if (!migration) return null
+  if (migration.status !== 'pending' && migration.status !== 'running' && migration.status !== 'partial_failed') {
+    return null
+  }
+
+  // Roll back alias if it was created
+  if (migration.sourceProjectId) {
+    deleteProjectAlias(migration.sourceProjectId, db)
+  }
+
+  return markMigrationFailed(migrationId, {
+    errorCode: 'MIGRATION_CANCELLED',
+    errorMessage: 'Migration was cancelled by the user',
+    stage: migration.stage === 'queued' ? 'failed' : migration.stage,
+    partial: migration.stage === 'transferring_snapshot' || migration.stage === 'verifying_target',
+    sourcePreserved: true,
+    targetProjectId: migration.targetProjectId,
+  }, db)
+}
+
 export function upsertProjectAlias(
   sourceProjectId: string,
   canonicalProjectId: string,
@@ -292,4 +323,14 @@ export function listHiddenSourceProjectIds(dbInput?: Database): string[] {
   const db = dbOrDefault(dbInput)
   const rows = db.prepare('SELECT source_project_id FROM project_aliases').all() as Array<{ source_project_id: string }>
   return rows.map((row) => row.source_project_id)
+}
+
+/**
+ * QA-054: Remove a project alias (used for rollback on migration failure).
+ * Returns true if the alias existed and was deleted, false otherwise.
+ */
+export function deleteProjectAlias(sourceProjectId: string, dbInput?: Database): boolean {
+  const db = dbOrDefault(dbInput)
+  const result = db.prepare('DELETE FROM project_aliases WHERE source_project_id = ?').run(sourceProjectId)
+  return result.changes > 0
 }

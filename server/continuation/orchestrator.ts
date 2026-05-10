@@ -6,6 +6,7 @@ import { sshManager as defaultSshManager } from '../ssh/manager.ts'
 import { fileWatcher as defaultFileWatcher } from '../ssh/watcher.ts'
 import { pushToProject as defaultPushToProject } from './capture.ts'
 import { agentUrls } from '../state/agents.ts'
+import { normalizeAgentUrl } from '../lib/agent-url.ts'
 import { createLogger } from '../lib/logger.ts'
 import {
   createProjectMigration,
@@ -97,15 +98,24 @@ export class ContinuationOrchestrator {
   }
 
   private async cleanupOrphanedMigrations(sourceProjectId: string, excludeMigrationId: string) {
-    const { getDB } = require('../state/db.ts');
-    const db = getDB();
-    const rows = db.prepare(`SELECT id, target_project_id FROM project_migrations WHERE source_project_id = ? AND id != ? AND target_project_id IS NOT NULL AND status IN ('failed', 'partial_failed')`).all(sourceProjectId, excludeMigrationId) as Array<{ id: string, target_project_id: string }>;
+    const db = getDB()
+    const rows = db
+      .prepare(
+        `SELECT id, target_project_id FROM project_migrations WHERE source_project_id = ? AND id != ? AND target_project_id IS NOT NULL AND status IN ('failed', 'partial_failed')`,
+      )
+      .all(sourceProjectId, excludeMigrationId) as Array<{ id: string; target_project_id: string }>
     for (const row of rows) {
       try {
-        await this.deps.cli.deleteProject(row.target_project_id);
-        log.info({ sourceProjectId, targetProjectId: row.target_project_id }, 'cleaned up orphaned target project');
+        await this.deps.cli.deleteProject(row.target_project_id)
+        log.info(
+          { sourceProjectId, targetProjectId: row.target_project_id },
+          'cleaned up orphaned target project',
+        )
       } catch (error) {
-        log.error({ targetProjectId: row.target_project_id, error: String(error) }, 'failed to clean up orphaned target project');
+        log.error(
+          { targetProjectId: row.target_project_id, error: String(error) },
+          'failed to clean up orphaned target project',
+        )
       }
     }
   }
@@ -126,20 +136,23 @@ export class ContinuationOrchestrator {
       if (canonicalLatest) return canonicalLatest
     }
 
-    let reusableTargetId: string | null = null;
+    let reusableTargetId: string | null = null
     if (latest && (latest.status === 'failed' || latest.status === 'partial_failed') && latest.targetProjectId) {
-      reusableTargetId = latest.targetProjectId;
-      log.info({ sourceProjectId, targetProjectId: reusableTargetId }, 'reusing existing target project from previous attempt');
+      reusableTargetId = latest.targetProjectId
+      log.info(
+        { sourceProjectId, targetProjectId: reusableTargetId },
+        'reusing existing target project from previous attempt',
+      )
     }
 
-    const migration = createProjectMigration(sourceProjectId, reusableTargetId);
+    const migration = createProjectMigration(sourceProjectId, reusableTargetId)
     
     if (!reusableTargetId) {
-      this.cleanupOrphanedMigrations(sourceProjectId, migration.id).catch(err => {
-        log.error({ sourceProjectId, error: String(err) }, 'Failed to run cleanupOrphanedMigrations');
-      });
+      this.cleanupOrphanedMigrations(sourceProjectId, migration.id).catch((err) => {
+        log.error({ sourceProjectId, error: String(err) }, 'Failed to run cleanupOrphanedMigrations')
+      })
     } else {
-      setMigrationTarget(migration.id, reusableTargetId);
+      setMigrationTarget(migration.id, reusableTargetId)
     }
 
     this.ensureExecution(sourceProjectId, migration.id)
@@ -277,6 +290,10 @@ export class ContinuationOrchestrator {
     const sandbox = sandboxResult.data.sandbox
     const links = sandboxResult.data.links
 
+    const acquiredAgentUrl = normalizeAgentUrl(
+      typeof (links as any)?.agentUrl === 'string' ? (links as any).agentUrl : ((links as any)?.agentUrl?.url as unknown),
+    )
+
     try {
       this.deps.sshManager.primeCredentials(targetProjectId, sandbox)
       await this.deps.sshManager.getConnection(targetProjectId)
@@ -291,8 +308,8 @@ export class ContinuationOrchestrator {
       })
     }
 
-    if ((links as any)?.agentUrl?.url) {
-      agentUrls.set(targetProjectId, String((links as any).agentUrl.url))
+    if (acquiredAgentUrl) {
+      agentUrls.set(targetProjectId, acquiredAgentUrl)
     }
 
     let warning: string | null = null

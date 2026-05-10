@@ -1,18 +1,19 @@
 import { describe, expect, test } from 'bun:test'
 import { cli } from '../../server/cli/wrapper.ts'
-import { rm, stat } from 'fs/promises'
 
 describe('large prompt handling', () => {
-  test('agentSend intercepts large text blocks and passes them via file', async () => {
+  test('agentSend pipes large text blocks via stdin', async () => {
     // Generate a string that would exceed ARG_MAX
     const massivePrompt = 'A'.repeat(5 * 1024 * 1024) // 5MB
 
-    // Mock runStream to catch the arguments
+    // Mock runStream to catch the arguments and stdin
     const originalRunStream = cli.runStream.bind(cli)
     let interceptedArgs: string[] = []
+    let interceptedStdin: string | undefined
 
     ;(cli as any).runStream = async function* (args: string[], opts: any) {
       interceptedArgs = args
+      interceptedStdin = opts?.stdin
       yield { type: 'done', input_tokens: 100, output_tokens: 10 }
     }
 
@@ -22,19 +23,13 @@ describe('large prompt handling', () => {
         expect(event.type).toBe('done')
       }
 
-      // Check that prompt is passed via file instead of as argument string
-      const promptArgIndex = interceptedArgs.indexOf('--prompt-file')
-      expect(promptArgIndex).toBeGreaterThan(-1)
-      const promptFile = interceptedArgs[promptArgIndex + 1]
-      expect(promptFile).toBeDefined()
+      // Check that prompt is passed via stdin, not as argument string
+      expect(interceptedArgs).not.toContain('--prompt-file')
+      expect(interceptedStdin).toBe(massivePrompt)
 
-      // The file should be cleaned up by the finally block
-      try {
-        await stat(promptFile)
-        expect(true).toBe(false) // Should not reach here
-      } catch (e: any) {
-        expect(e.code).toBe('ENOENT')
-      }
+      // The prompt should NOT appear as a positional argument
+      const promptInArgs = interceptedArgs.find(arg => arg.length > 1000)
+      expect(promptInArgs).toBeUndefined()
     } finally {
       ;(cli as any).runStream = originalRunStream
     }

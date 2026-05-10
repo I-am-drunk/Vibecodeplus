@@ -41,7 +41,7 @@ export function parseCliUserPayload(payload: unknown): VibecodeUser | null {
     name: fullName || email,
     plan: (plan === 'pro' || plan === 'team' || plan === 'enterprise' ? plan : 'free') as VibecodeUser['plan'],
     credits: {
-      balance: balance > 1000 ? balance / 100 : balance,
+      balance: balance / 100,
       used: asNumber(creditsRaw.used) ?? 0,
       limit: asNumber(creditsRaw.limit),
     },
@@ -108,14 +108,25 @@ export function parseSandboxCredentials(payload: unknown): SandboxCredentials | 
     port,
     user,
     key_path: keyPath ?? '',
+    password: asString(payload.password ?? payload.sshPassword) ?? undefined,
+    privateKey: asString(payload.privateKey) ?? undefined,
+    sshPassword: asString(payload.sshPassword) ?? undefined,
   }
 }
 
 export function parseAcquireSandboxPayload(payload: unknown): { sandbox: SandboxCredentials; links?: Record<string, unknown> } | null {
   if (!isRecord(payload)) return null
 
-  const sandboxPayload = isRecord(payload.sandbox) ? payload.sandbox : payload
-  const sandbox = parseSandboxCredentials(sandboxPayload)
+  // The CLI may return SSH fields at different levels:
+  // - sandbox sub-object: { sandbox: { id, status, sshPassword, host?, port?, user? } }
+  // - top-level: { host, port, user, sshPassword, ... }
+  // Merge both levels so we capture all available fields
+  const sandboxSub = isRecord(payload.sandbox) ? payload.sandbox : {}
+  const merged = { ...payload, ...sandboxSub }
+  // Remove the nested sandbox key to avoid confusion
+  delete (merged as any).sandbox
+
+  const sandbox = parseSandboxCredentials(merged)
   if (!sandbox) return null
 
   return {

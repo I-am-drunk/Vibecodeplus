@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { sshFiles } from '../ssh/files.ts'
+import { sshManager } from '../ssh/manager.ts'
 import { createLogger } from '../lib/logger.ts'
-import { AppError, badRequest, jsonError, success } from '../lib/errors.ts'
+import { AppError, badRequest, forbidden, jsonError, success } from '../lib/errors.ts'
 import {
   parseFilesPathRequest,
   parseFilesRenameRequest,
@@ -13,6 +14,12 @@ import { validatePath } from '../lib/validation.ts'
 const log = createLogger('files')
 
 export const filesRouter = new Hono()
+
+function toSafeDownloadFilename(path: string): string {
+  const base = path.split('/').pop() ?? 'file'
+  const sanitized = base.replace(/[\r\n"\\]/g, '_').trim()
+  return sanitized || 'file'
+}
 
 filesRouter.get('/', async (c) => {
   try {
@@ -37,6 +44,21 @@ filesRouter.get('/content', async (c) => {
     if (!projectId || !path) throw badRequest('projectId and path required')
     const safePath = validatePath(path, 'path')
 
+    // QA-161: Binary file read guard — reject known binary extensions
+    const binaryExtensions = new Set([
+      '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif',
+      '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.webm',
+      '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar', '.tgz',
+      '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+      '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.db', '.sqlite',
+      '.woff', '.woff2', '.ttf', '.eot', '.otf',
+      '.pyc', '.class', '.o', '.obj',
+    ])
+    const ext = safePath.substring(safePath.lastIndexOf('.')).toLowerCase()
+    if (binaryExtensions.has(ext)) {
+      return c.json(success({ binary: true, path: safePath, message: 'Binary file — content not available as text' }))
+    }
+
     const content = await sshFiles.readFile(projectId, safePath)
     return c.text(content, 200, { 'Content-Type': 'text/plain; charset=utf-8' })
   } catch (error) {
@@ -48,6 +70,10 @@ filesRouter.get('/content', async (c) => {
 filesRouter.put('/content', async (c) => {
   try {
     const body = await parseFilesWriteRequest(await readBody(c))
+    // CP-35: No writes after workspace unmount
+    if (!sshManager.isConnected(body.projectId)) {
+      throw forbidden('Workspace is not connected. Please open the workspace before editing files.')
+    }
     await sshFiles.writeFile(body.projectId, body.path, body.content)
     return c.json(success({ ok: true }))
   } catch (error) {
@@ -59,6 +85,9 @@ filesRouter.put('/content', async (c) => {
 filesRouter.post('/mkdir', async (c) => {
   try {
     const body = await parseFilesPathRequest(await readBody(c))
+    if (!sshManager.isConnected(body.projectId)) {
+      throw forbidden('Workspace is not connected. Please open the workspace before creating directories.')
+    }
     await sshFiles.mkdir(body.projectId, body.path)
     return c.json(success({ ok: true }))
   } catch (error) {
@@ -70,6 +99,9 @@ filesRouter.post('/mkdir', async (c) => {
 filesRouter.delete('/', async (c) => {
   try {
     const body = await parseFilesPathRequest(await readBody(c))
+    if (!sshManager.isConnected(body.projectId)) {
+      throw forbidden('Workspace is not connected. Please open the workspace before deleting files.')
+    }
     await sshFiles.remove(body.projectId, body.path)
     return c.json(success({ ok: true }))
   } catch (error) {
@@ -81,6 +113,9 @@ filesRouter.delete('/', async (c) => {
 filesRouter.post('/rename', async (c) => {
   try {
     const body = await parseFilesRenameRequest(await readBody(c))
+    if (!sshManager.isConnected(body.projectId)) {
+      throw forbidden('Workspace is not connected. Please open the workspace before renaming files.')
+    }
     await sshFiles.rename(body.projectId, body.from, body.to)
     return c.json(success({ ok: true }))
   } catch (error) {
@@ -98,7 +133,7 @@ filesRouter.get('/download', async (c) => {
     const safePath = validatePath(path, 'path')
 
     const content = await sshFiles.readFile(projectId, safePath)
-    const filename = safePath.split('/').pop() ?? 'file'
+    const filename = toSafeDownloadFilename(safePath)
 
     return c.text(content, 200, {
       'Content-Disposition': `attachment; filename="${filename}"`,

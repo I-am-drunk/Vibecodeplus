@@ -81,9 +81,35 @@ export function readArray(record: Record<string, unknown>, field: string): unkno
 
 export function validatePath(path: string, fieldName = 'path'): string {
   const normalized = path.trim()
-  if (!normalized) throw badRequest(`Field \"${fieldName}\" is required`)
-  if (normalized.includes('..')) {
-    throw badRequest(`Field \"${fieldName}\" contains an invalid path segment`)
+  if (!normalized) throw badRequest(`Field "${fieldName}" is required`)
+  if (!normalized.startsWith('/')) {
+    throw badRequest(`Field "${fieldName}" must start with "/"`)
+  }
+  if (normalized.includes('\\')) {
+    throw badRequest(`Field "${fieldName}" contains an invalid path separator`)
+  }
+  if (normalized.includes('\u0000')) {
+    throw badRequest(`Field "${fieldName}" contains an invalid character`)
+  }
+  if (normalized.includes('\r') || normalized.includes('\n')) {
+    throw badRequest(`Field "${fieldName}" contains an invalid character`)
+  }
+  if (normalized.includes("'")) {
+    throw badRequest(`Field "${fieldName}" contains an invalid character`)
+  }
+  if (normalized.includes('`')) {
+    throw badRequest(`Field "${fieldName}" contains an invalid character`)
+  }
+  if (normalized.includes('$')) {
+    throw badRequest(`Field "${fieldName}" contains an invalid character`)
+  }
+
+  const segments = normalized.split('/')
+  for (const segment of segments) {
+    if (!segment) continue
+    if (segment === '.' || segment === '..') {
+      throw badRequest(`Field "${fieldName}" contains an invalid path segment`)
+    }
   }
   return normalized
 }

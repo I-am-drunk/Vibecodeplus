@@ -5,6 +5,7 @@ import { useChat } from '../../hooks/useChat'
 import { MessageBubble } from '../chat/MessageBubble'
 import { ChatInput } from '../chat/ChatInput'
 import { ToolCallCard } from '../chat/ToolCallCard'
+import { ThinkingSection } from '../chat/ThinkingSection'
 import { SessionList } from './SessionList'
 import { CreditsDialog } from '../dialogs/CreditsDialog'
 import { KeyRecoveryDialog } from '../dialogs/KeyRecoveryDialog'
@@ -24,6 +25,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
     setMessages,
     setActiveSession,
     toolCalls,
+    thinkingBlocks,
   } = useChatStore()
 
   const { sendMessage, retryFromIndex, continueMessage, loadSession } = useChat(projectId)
@@ -198,6 +200,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
               const isLastUserMessage = message.role === 'user' && !messages.slice(index + 1).some((m) => m.role === 'user')
               const isLastMessage = index === messages.length - 1
               const messageToolCalls = message.role === 'assistant' ? toolCalls.filter((toolCall) => toolCall.messageId === message.id) : []
+              const messageThinking = message.role === 'assistant' ? thinkingBlocks.filter((b) => b.messageId === message.id) : []
               const showRetry = message.role === 'assistant' && !message.content && isLastMessage && !isStreaming
 
               return (
@@ -213,8 +216,13 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
                     }
                     onContinue={message.cutOff && isLastMessage && !isStreaming ? () => void continueMessage() : undefined}
                   />
+                  {messageThinking.length > 0 && (
+                    <div className="mt-2 ml-10">
+                      <ThinkingSection blocks={messageThinking} isStreaming={false} />
+                    </div>
+                  )}
                   {messageToolCalls.length > 0 && (
-                    <div className="mt-3 space-y-2">
+                    <div className="mt-2 ml-10 space-y-1.5">
                       {messageToolCalls.map((toolCall) => (
                         <ToolCallCard key={toolCall.id} {...toolCall} />
                       ))}
@@ -231,8 +239,13 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
                     message={{ id: '__streaming', role: 'assistant', content: streamingText, createdAt: '', streaming: true }}
                   />
                 )}
+                {thinkingBlocks.filter((b) => !b.messageId).length > 0 && (
+                  <div className={streamingText ? 'mt-2 ml-10' : 'ml-10'}>
+                    <ThinkingSection blocks={thinkingBlocks.filter((b) => !b.messageId)} isStreaming={true} />
+                  </div>
+                )}
                 {toolCalls.filter((toolCall) => !toolCall.messageId).length > 0 && (
-                  <div className={streamingText ? 'mt-3 space-y-2' : 'space-y-2'}>
+                  <div className={streamingText ? 'mt-2 ml-10 space-y-1.5' : 'ml-10 space-y-1.5'}>
                     {toolCalls
                       .filter((toolCall) => !toolCall.messageId)
                       .map((toolCall) => (
@@ -240,7 +253,7 @@ export function ChatPanel({ projectId, disableInput = false }: { projectId: stri
                       ))}
                   </div>
                 )}
-                {!streamingText && toolCalls.filter((toolCall) => !toolCall.messageId).length === 0 && (
+                {!streamingText && thinkingBlocks.filter((b) => !b.messageId).length === 0 && toolCalls.filter((toolCall) => !toolCall.messageId).length === 0 && (
                   <div className="flex gap-3 items-center">
                     <div className="w-8 h-8 rounded-lg bg-[#0a84ff] flex items-center justify-center flex-shrink-0">
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

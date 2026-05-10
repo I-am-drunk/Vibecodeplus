@@ -1,11 +1,13 @@
 import { createServer, type Server } from 'net'
 import { sshManager } from './manager.ts'
+import { dependencyError } from '../lib/errors.ts'
 
 type Tunnel = { localPort: number; server: Server }
 
 class PortForwardManager {
   private tunnels = new Map<string, Map<number, Tunnel>>()
   private nextPort = 18001
+  private static MAX_PORT = 65000
 
   async detectPorts(projectId: string): Promise<number[]> {
     try {
@@ -24,6 +26,9 @@ class PortForwardManager {
     if (existing) return existing.localPort
 
     const localPort = this.nextPort++
+    if (localPort > PortForwardManager.MAX_PORT) {
+      throw dependencyError('Port allocation exhausted: too many active tunnels. Please close some workspaces and try again.')
+    }
     const conn = await sshManager.getConnection(projectId).catch(() => null)
     if (!conn) throw new Error('SSH not connected')
 
@@ -49,6 +54,21 @@ class PortForwardManager {
 
   isForwarded(projectId: string, remotePort: number): boolean {
     return this.tunnels.get(projectId)?.has(remotePort) ?? false
+  }
+
+  tunnelCount(projectId?: string): number {
+    if (projectId) {
+      return this.tunnels.get(projectId)?.size ?? 0
+    }
+    let total = 0
+    for (const projectTunnels of this.tunnels.values()) {
+      total += projectTunnels.size
+    }
+    return total
+  }
+
+  availablePorts(): number {
+    return Math.max(0, PortForwardManager.MAX_PORT - this.nextPort + 1)
   }
 
   getForwardedPorts(projectId: string): { remote: number; local: number }[] {

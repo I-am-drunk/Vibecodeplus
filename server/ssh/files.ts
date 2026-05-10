@@ -1,5 +1,6 @@
 import { sshManager } from './manager.ts'
 import type { FileNode } from '../cli/types.ts'
+import { shellEscape } from '../lib/shell.ts'
 
 const IGNORE = new Set(['node_modules', '.git', '__pycache__', '.venv', '.next', 'dist', '.cache'])
 const WS = '/home/user/workspace'
@@ -10,9 +11,9 @@ export async function getFileTree(projectId: string, absPath: string): Promise<F
   try {
     // Single find: print type char + path for each direct child
     output = await sshManager.exec(projectId,
-      `find '${absPath}' -maxdepth 1 -mindepth 1 \\( -type d -printf 'd %p\\n' -o -type f -printf 'f %p\\n' \\) 2>/dev/null || ` +
+      `find '${shellEscape(absPath)}' -maxdepth 1 -mindepth 1 \\( -type d -printf 'd %p\\n' -o -type f -printf 'f %p\\n' \\) 2>/dev/null || ` +
       // BusyBox fallback: no -printf, use two finds
-      `{ find '${absPath}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's/^/d /'; find '${absPath}' -maxdepth 1 -mindepth 1 -type f 2>/dev/null | sed 's/^/f /'; }`
+      `{ find '${shellEscape(absPath)}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's/^/d /'; find '${shellEscape(absPath)}' -maxdepth 1 -mindepth 1 -type f 2>/dev/null | sed 's/^/f /'; }`
     )
   } catch { return [] }
 
@@ -46,7 +47,7 @@ export async function getFileTree(projectId: string, absPath: string): Promise<F
 export async function readFile(projectId: string, filePath: string): Promise<{ content: string | null; binary: boolean; size: number; mimeType?: string }> {
   const fullPath = `${WS}${filePath}`
   try {
-    const content = await sshManager.exec(projectId, `cat '${fullPath}'`)
+    const content = await sshManager.exec(projectId, `cat '${shellEscape(fullPath)}'`)
     return { content, binary: false, size: Buffer.byteLength(content) }
   } catch (err) {
     throw new Error(`Failed to read file: ${filePath}`)
@@ -56,23 +57,23 @@ export async function readFile(projectId: string, filePath: string): Promise<{ c
 export async function writeFile(projectId: string, filePath: string, content: string): Promise<{ size: number }> {
   const fullPath = `${WS}${filePath}`
   const dir = fullPath.split('/').slice(0, -1).join('/')
-  await sshManager.exec(projectId, `mkdir -p '${dir}'`)
+  await sshManager.exec(projectId, `mkdir -p '${shellEscape(dir)}'`)
   // Write via heredoc — no SFTP needed
   const escaped = content.replace(/\\/g, '\\\\').replace(/'/g, "'\\''")
-  await sshManager.exec(projectId, `printf '%s' '${escaped}' > '${fullPath}'`)
+  await sshManager.exec(projectId, `printf '%s' '${escaped}' > '${shellEscape(fullPath)}'`)
   return { size: Buffer.byteLength(content) }
 }
 
 export async function deleteFile(projectId: string, filePath: string): Promise<void> {
-  await sshManager.exec(projectId, `rm -rf '${WS}${filePath}'`)
+  await sshManager.exec(projectId, `rm -rf '${shellEscape(`${WS}${filePath}`)}'`)
 }
 
 export async function mkdirRemote(projectId: string, dirPath: string): Promise<void> {
-  await sshManager.exec(projectId, `mkdir -p '${WS}${dirPath}'`)
+  await sshManager.exec(projectId, `mkdir -p '${shellEscape(`${WS}${dirPath}`)}'`)
 }
 
 export async function renameFile(projectId: string, oldPath: string, newPath: string): Promise<void> {
-  await sshManager.exec(projectId, `mv '${WS}${oldPath}' '${WS}${newPath}'`)
+  await sshManager.exec(projectId, `mv '${shellEscape(`${WS}${oldPath}`)}' '${shellEscape(`${WS}${newPath}`)}'`)
 }
 
 export function detectLanguage(filename: string): string {

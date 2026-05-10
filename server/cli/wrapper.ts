@@ -3,6 +3,7 @@ import { existsSync } from 'fs'
 import { which } from '../process/registry.ts'
 import type { CLIResult, CLIError, VibecodeUser, VibecodeProject, AgentStreamEvent } from './types.ts'
 import { createLogger } from '../lib/logger.ts'
+import { normalizeAgentUrl } from '../lib/agent-url.ts'
 import {
   parseAcquireSandboxPayload,
   parseAgentStopPayload,
@@ -171,13 +172,23 @@ export class VibecodeCliWrapper {
     })
   }
 
-  async *runStream(args: string[], opts?: { signal?: AbortSignal }): AsyncGenerator<AgentStreamEvent> {
+  async *runStream(args: string[], opts?: { signal?: AbortSignal; stdin?: string }): AsyncGenerator<AgentStreamEvent> {
     if (!this.binaryPath) throw new Error('vibecode-cli not found')
 
+    const hasStdin = opts?.stdin != null
     const proc = spawn(this.binaryPath, args, {
       env: this.getEnv(),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: hasStdin ? ['pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
     })
+
+    // Pipe stdin if provided
+    if (hasStdin && proc.stdin) {
+      proc.stdin.write(opts!.stdin!)
+      proc.stdin.end()
+    }
+
+    const stderr = proc.stderr!
+    const stdout = proc.stdout!
 
     let stderrBuffer = ''
     let stdoutBuffer = ''
@@ -185,56 +196,59 @@ export class VibecodeCliWrapper {
     const onAbort = () => proc.kill('SIGTERM')
     opts?.signal?.addEventListener('abort', onAbort)
 
-    proc.stderr.on('data', (chunk: Buffer) => {
-      stderrBuffer += chunk.toString()
-    })
+    try {
+      stderr.on('data', (chunk: Buffer) => {
+        stderrBuffer += chunk.toString()
+      })
 
-    for await (const chunk of proc.stdout) {
-      stdoutBuffer += chunk.toString()
-      const lines = stdoutBuffer.split('\n')
-      stdoutBuffer = lines.pop() ?? ''
+      for await (const chunk of stdout) {
+        stdoutBuffer += chunk.toString()
+        const lines = stdoutBuffer.split('\n')
+        stdoutBuffer = lines.pop() ?? ''
 
-      for (const raw of lines) {
-        const line = raw.trim()
-        if (!line) continue
+        for (const raw of lines) {
+          const line = raw.trim()
+          if (!line) continue
 
-        const payload = line.startsWith('data:') ? line.slice(5).trim() : line
-        if (!payload || payload === '[DONE]') continue
+          const payload = line.startsWith('data:') ? line.slice(5).trim() : line
+          if (!payload || payload === '[DONE]') continue
 
-        try {
-          const parsed = JSON.parse(payload)
-          const event = parseAgentStreamEvent(parsed.message ?? parsed)
-          if (event) {
-            yield event
+          try {
+            const parsed = JSON.parse(payload)
+            const event = parseAgentStreamEvent(parsed.message ?? parsed)
+            if (event) {
+              yield event
+            }
+          } catch {
+            // ignore non-json line
           }
-        } catch {
-          // ignore non-json line
         }
       }
-    }
 
-    if (stdoutBuffer.trim()) {
-      try {
-        const parsed = JSON.parse(stdoutBuffer.trim())
-        const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
-        if (event) yield event
-      } catch {
-        // ignore trailing non-json
+      if (stdoutBuffer.trim()) {
+        try {
+          const parsed = JSON.parse(stdoutBuffer.trim())
+          const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
+          if (event) yield event
+        } catch {
+          // ignore trailing non-json
+        }
       }
-    }
 
-    const exitCode = await new Promise<number>((resolve) => {
-      proc.on('exit', (code) => resolve(code ?? 0))
-    })
+      const exitCode = await new Promise<number>((resolve) => {
+        proc.on('exit', (code) => resolve(code ?? 0))
+      })
 
-    opts?.signal?.removeEventListener('abort', onAbort)
+      if (exitCode !== 0) {
+        throw new Error(stderrBuffer.trim() || `CLI exited with code ${exitCode}`)
+      }
 
-    if (exitCode !== 0) {
-      throw new Error(stderrBuffer.trim() || `CLI exited with code ${exitCode}`)
-    }
-
-    if (stderrBuffer.trim()) {
-      log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
+      if (stderrBuffer.trim()) {
+        log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
+      }
+    } finally {
+      opts?.signal?.removeEventListener('abort', onAbort)
+      if (!proc.killed) proc.kill('SIGTERM')
     }
   }
 
@@ -321,6 +335,20 @@ export class VibecodeCliWrapper {
 
     const parsed = parseAcquireSandboxPayload(result.data)
     if (!parsed) {
+      log.warn({ raw: JSON.stringify(result.data).slice(0, 500) }, 'acquireSandbox: parseAcquireSandboxPayload returned null — enriching with sandboxes get')
+
+      // acquire may not include host/port/user — fetch full details via sandboxes get
+      const details = await this.getSandboxDetails(projectId)
+      if (details.ok && details.data) {
+        // Merge the get details with the acquire output (acquire has links, get has SSH fields)
+        const base = (typeof result.data === 'object' && result.data ? result.data : {}) as Record<string, unknown>
+        const enriched = { ...base, ...details.data }
+        const enrichedParsed = parseAcquireSandboxPayload(enriched)
+        if (enrichedParsed) {
+          return { ok: true, data: enrichedParsed }
+        }
+      }
+
       return {
         ok: false,
         error: {
@@ -330,10 +358,24 @@ export class VibecodeCliWrapper {
       }
     }
 
-    return {
-      ok: true,
-      data: parsed,
+    // If parsed but missing host, enrich with sandboxes get
+    if (!parsed.sandbox.host || parsed.sandbox.host === '') {
+      const details = await this.getSandboxDetails(projectId)
+      if (details.ok && details.data) {
+        const base = (typeof result.data === 'object' && result.data ? result.data : {}) as Record<string, unknown>
+        const enriched = { ...base, ...details.data }
+        const enrichedParsed = parseAcquireSandboxPayload(enriched)
+        if (enrichedParsed) {
+          return { ok: true, data: enrichedParsed }
+        }
+      }
     }
+
+    return { ok: true, data: parsed }
+  }
+
+  async getSandboxDetails(projectId: string): Promise<CLIResult<Record<string, unknown>>> {
+    return await this.runJSON<Record<string, unknown>>(['sandboxes', 'get', projectId])
   }
 
   async exportSandbox(projectId: string, outputPath: string): Promise<CLIResult<{ path: string }>> {
@@ -371,24 +413,14 @@ export class VibecodeCliWrapper {
   }
 
   async *agentSend(agentUrl: string, model: string, prompt: string, opts?: { signal?: AbortSignal }) {
-    const { mkdtemp, writeFile, rm } = await import('fs/promises')
-    const { join } = await import('path')
-    const { tmpdir } = await import('os')
-    
-    const tempDir = await mkdtemp(join(tmpdir(), 'vibecode-prompt-'))
-    const promptPath = join(tempDir, 'prompt.txt')
-    
-    const byteSize = Buffer.byteLength(prompt, 'utf-8')
-    log.info({ byteSize }, 'Writing massive prompt to temporary file')
-    await writeFile(promptPath, prompt, { encoding: 'utf-8' })
+    const validated = normalizeAgentUrl(agentUrl)
+    if (!validated) throw new Error('Invalid agent URL: must be a valid http/https URL')
 
-    try {
-      yield* this.runStream(['agent', 'send', '--model', model, '--output', 'json', '--prompt-file', promptPath, agentUrl], {
-        signal: opts?.signal,
-      })
-    } finally {
-      await rm(tempDir, { recursive: true, force: true }).catch(() => {})
-    }
+    // Pipe prompt via stdin — vibecode-cli agent send reads from stdin when no positional PROMPT arg
+    yield* this.runStream(['agent', 'send', '--model', model, '--output', 'json', validated], {
+      signal: opts?.signal,
+      stdin: prompt,
+    })
   }
 
   async agentStop(agentUrl: string): Promise<CLIResult<{ stopped: boolean }>> {

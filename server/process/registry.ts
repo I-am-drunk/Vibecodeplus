@@ -2,6 +2,7 @@ import { execSync } from 'child_process'
 import type { ChildProcess } from 'child_process'
 
 export function which(cmd: string): string | null {
+  if (!/^[a-zA-Z0-9_.+-]+$/.test(cmd)) return null
   try {
     return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() || null
   } catch {
@@ -21,7 +22,6 @@ class ProcessRegistry {
     const proc = this.processes.get(id)
     if (proc && !proc.killed) {
       proc.kill('SIGTERM')
-      this.processes.delete(id)
     }
   }
 

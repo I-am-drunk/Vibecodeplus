@@ -46,6 +46,9 @@ export type SandboxCredentials = {
   port: number
   user: string
   key_path: string
+  password?: string
+  privateKey?: string
+  sshPassword?: string
 }
 
 export type AgentStreamEvent =

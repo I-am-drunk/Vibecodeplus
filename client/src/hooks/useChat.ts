@@ -129,9 +129,12 @@ export function useChat(projectId: string | null) {
       throw new Error('Invalid session payload')
     }
 
+    const restoredToolCalls: any[] = []
+    const restoredThinkingBlocks: any[] = []
+
     const mapped = response.messages.map((message: any) => {
       const terminal = message.status as Message['terminalStatus']
-      return {
+      const msg: Message = {
         id: String(message.id),
         role: message.role,
         content: message.content,
@@ -140,13 +143,52 @@ export function useChat(projectId: string | null) {
         outputTokens: message.outputTokens ?? message.output_tokens,
         cutOff: message.status !== 'complete',
         terminalStatus: terminal,
-      } satisfies Message
+      }
+
+      // Restore tool calls from persisted session
+      if (message.role === 'assistant' && Array.isArray(message.toolCalls)) {
+        for (const tc of message.toolCalls) {
+          restoredToolCalls.push({
+            id: String(tc.id),
+            name: String(tc.name),
+            input: tc.input ?? {},
+            result: tc.result,
+            status: tc.status ?? 'success',
+            messageId: msg.id,
+          })
+        }
+      }
+
+      // Restore thinking blocks from persisted session
+      if (message.role === 'assistant' && Array.isArray(message.thinkingBlocks)) {
+        for (const tb of message.thinkingBlocks) {
+          restoredThinkingBlocks.push({
+            id: `thinking-${msg.id}-${restoredThinkingBlocks.length}`,
+            summary: tb.summary,
+            messageId: msg.id,
+          })
+        }
+      }
+
+      return msg satisfies Message
     })
 
     const chatStore = useChatStore.getState()
     chatStore.setMessages(mapped)
     chatStore.setActiveSession(sessionId)
     chatStore.setStreaming(false)
+    chatStore.clearToolCalls()
+    chatStore.clearThinkingBlocks()
+
+    // Re-populate store with persisted tool calls
+    for (const tc of restoredToolCalls) {
+      chatStore.addToolCall(tc)
+    }
+
+    // Re-populate store with persisted thinking blocks
+    for (const tb of restoredThinkingBlocks) {
+      chatStore.addThinkingBlock(tb)
+    }
   }, [])
 
   return {

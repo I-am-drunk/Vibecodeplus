@@ -28,6 +28,10 @@ import {
   readBody,
 } from '../contracts/routes.ts'
 import { agentUrls } from '../state/agents.ts'
+import { normalizeAgentUrl } from '../lib/agent-url.ts'
+import { mapGetUserFailure } from '../lib/errors.ts'
+import { updateCorrelation, getCorrelation } from '../lib/correlation.ts'
+import { getWorkspaceState, isWorkspaceOperational } from '../services/workspaceState.ts'
 
 const log = createLogger('projects')
 
@@ -252,6 +256,9 @@ projectsRouter.post('/:id/workspace', async (c) => {
     const resolved = resolveRequestedProject(requestedProjectId)
     const projectId = resolved.canonicalProjectId
 
+    // Enrich correlation context with project_id
+    updateCorrelation({ projectId })
+
     const db = getDB()
     const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId) as ProjectRow | undefined
     if (!row) {
@@ -259,12 +266,13 @@ projectsRouter.post('/:id/workspace', async (c) => {
     }
 
     const existingConnection = sshManager.isConnected(projectId)
-    const existingAgentUrl = agentUrls.get(projectId)
+    const existingAgentUrl = normalizeAgentUrl(agentUrls.get(projectId))
     if (existingConnection && existingAgentUrl) {
       db.prepare(`UPDATE projects SET last_opened_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(projectId)
       return c.json(
         success({
           ok: true,
+          requestId: getCorrelation().requestId,
           agentUrl: existingAgentUrl,
           canonicalProjectId: projectId,
           mappedFromProjectId: resolved.mappedFromProjectId,
@@ -276,13 +284,7 @@ projectsRouter.post('/:id/workspace', async (c) => {
 
     const acquire = await cli.acquireSandbox(projectId)
     if (!acquire.ok) {
-      const message = acquire.error.message || 'Failed to acquire sandbox'
-
-      if (acquire.error.code === 'CREDITS_EXHAUSTED') {
-        throw new AppError('CREDITS_EXHAUSTED', 'Insufficient credits. Add credits at vibecode.dev/payments', 402)
-      }
-
-      if (acquire.error.code === 'AUTH_FAILED' || message.toLowerCase().includes('forbidden')) {
+      if (acquire.error.code === 'AUTH_FAILED') {
         const remote = await cli.listProjects()
         const existsRemotely = remote.ok && remote.data.some((project) => project.id === projectId)
         if (!existsRemotely) {
@@ -296,28 +298,29 @@ projectsRouter.post('/:id/workspace', async (c) => {
             }),
           )
         }
-
-        throw forbidden('API key is invalid or account is restricted. Please update your API key in Settings.', {
-          reason: 'FORBIDDEN',
-        })
       }
 
-      throw dependencyError(message, { dependencyCode: acquire.error.code })
+      throw mapGetUserFailure(acquire.error)
     }
 
     const sandbox = acquire.data.sandbox
     const links = acquire.data.links as any
+
+    const acquiredAgentUrl = normalizeAgentUrl(
+      typeof links?.agentUrl === 'string' ? links.agentUrl : (links?.agentUrl?.url as unknown),
+    )
 
     sshManager.primeCredentials(projectId, sandbox)
 
     try {
       await sshManager.getConnection(projectId)
     } catch (error) {
+      if (error instanceof AppError) throw error
       throw dependencyError(`SSH connect failed: ${error instanceof Error ? error.message : String(error)}`)
     }
 
-    if (links?.agentUrl?.url) {
-      agentUrls.set(projectId, String(links.agentUrl.url))
+    if (acquiredAgentUrl) {
+      agentUrls.set(projectId, acquiredAgentUrl)
     }
 
     const currentHash = getCurrentAuthHash()
@@ -334,12 +337,13 @@ projectsRouter.post('/:id/workspace', async (c) => {
     return c.json(
       success({
         ok: true,
+        requestId: getCorrelation().requestId,
         sandbox: {
           host: sandbox?.host,
           port: sandbox?.port,
           user: sandbox?.user,
         },
-        agentUrl: links?.agentUrl?.url,
+        agentUrl: acquiredAgentUrl || undefined,
         links,
         canonicalProjectId: projectId,
         mappedFromProjectId: resolved.mappedFromProjectId,
@@ -362,6 +366,19 @@ projectsRouter.delete('/:id/workspace', async (c) => {
     agentUrls.delete(canonicalProjectId)
 
     return c.json(success({ ok: true }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
+})
+
+// CP-29: Unified workspace state endpoint
+projectsRouter.get('/:id/state', async (c) => {
+  try {
+    const projectId = c.req.param('id')
+    if (!projectId) throw badRequest('Project id is required')
+
+    const state = getWorkspaceState(projectId)
+    return c.json(success({ state }))
   } catch (error) {
     return jsonError(c, error)
   }

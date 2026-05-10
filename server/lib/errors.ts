@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { ERROR_CODE_STATUS, isKnownErrorCode, PAYLOAD_TOO_LARGE as PAYLOAD_TOO_LARGE_CODE } from './errorCodes.ts'
 
 export type ErrorCode =
   | 'INVALID_JSON'
@@ -11,7 +12,9 @@ export type ErrorCode =
   | 'DEPENDENCY_ERROR'
   | 'MIGRATION_IN_PROGRESS'
   | 'MIGRATION_FAILED'
+  | 'MIGRATION_CANCELLED'
   | 'STREAM_CONFLICT'
+  | 'PAYLOAD_TOO_LARGE'
   | 'INTERNAL_ERROR'
 
 export type ErrorEnvelope = {
@@ -121,4 +124,44 @@ export function migrationInProgress(message: string, details?: unknown) {
 
 export function migrationFailed(message: string, details?: unknown) {
   return new AppError('MIGRATION_FAILED', message, 500, details)
+}
+
+export function payloadTooLarge(message: string, details?: unknown) {
+  return new AppError('PAYLOAD_TOO_LARGE', message, 413, details)
+}
+
+/**
+ * Map a CLI/dependency error code to an appropriate AppError.
+ * Centralized here to avoid circular imports between routes and lib modules.
+ */
+export function mapGetUserFailure(error: { code: string; message?: string }): AppError {
+  if (error.code === 'AUTH_FAILED') {
+    return forbidden('API key is invalid or account is restricted. Please update your API key in Settings.', {
+      dependencyCode: error.code,
+    })
+  }
+
+  if (error.code === 'CREDITS_EXHAUSTED') {
+    return new AppError(
+      'CREDITS_EXHAUSTED',
+      'This API key has zero credits. Please add credits at vibecode.dev/payments before using it.',
+      402,
+    )
+  }
+
+  if (error.code === 'NETWORK_ERROR') {
+    return new AppError('DEPENDENCY_ERROR', error.message || 'Network error contacting API', 503, {
+      dependencyCode: error.code,
+    })
+  }
+
+  if (error.code === 'TIMEOUT') {
+    return new AppError('DEPENDENCY_ERROR', error.message || 'Request timed out', 504, {
+      dependencyCode: error.code,
+    })
+  }
+
+  return new AppError('DEPENDENCY_ERROR', error.message || 'Authentication failed', 502, {
+    dependencyCode: error.code,
+  })
 }

@@ -36,6 +36,15 @@ function parseToolResult(event: any) {
   }
 }
 
+function parseThinking(event: any) {
+  if (event?.type !== 'thinking') return null
+  const payload = event.thinking ?? event
+  return {
+    id: `thinking-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    summary: typeof payload.summary === 'string' ? payload.summary : undefined,
+  }
+}
+
 function normalizeTerminal(rawTerminal: unknown): 'complete' | 'cut_off' | 'empty' | 'error' | 'aborted' {
   if (rawTerminal === 'complete') return 'complete'
   if (rawTerminal === 'error') return 'error'
@@ -110,14 +119,24 @@ export function useProjectEvents(projectId: string | null) {
             }
 
             const toolUse = parseToolUse(payload)
-            if (toolUse) chatStore.addToolCall(toolUse)
+            if (toolUse) {
+              console.debug('[WS] tool_use:', toolUse.name, toolUse.id)
+              chatStore.addToolCall(toolUse)
+            }
 
             const toolResult = parseToolResult(payload)
             if (toolResult) {
+              console.debug('[WS] tool_result:', toolResult.id, toolResult.status)
               chatStore.updateToolCall(toolResult.id, {
                 result: toolResult.result,
                 status: toolResult.status,
               })
+            }
+
+            const thinking = parseThinking(payload)
+            if (thinking) {
+              console.debug('[WS] thinking:', thinking.summary?.slice(0, 50))
+              chatStore.addThinkingBlock(thinking)
             }
 
             break

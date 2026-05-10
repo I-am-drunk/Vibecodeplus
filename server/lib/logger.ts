@@ -3,6 +3,7 @@ import { build as buildPretty } from 'pino-pretty'
 import { existsSync, mkdirSync, createWriteStream } from 'fs'
 import { join } from 'path'
 import { Writable } from 'stream'
+import { correlationLogBindings } from './correlation.ts'
 
 const logsDir = join(process.cwd(), 'logs')
 if (!existsSync(logsDir)) mkdirSync(logsDir, { recursive: true })
@@ -39,3 +40,20 @@ export const logger = pino({ level: 'trace' }, multiStream)
 export const addBrowserLogClient = (ws: any) => browserClients.add(ws)
 export const removeBrowserLogClient = (ws: any) => browserClients.delete(ws)
 export const createLogger = (component: string) => logger.child({ component })
+
+/**
+ * Create a correlation-aware logger that automatically merges
+ * request_id / project_id / stream_id / migration_id from the
+ * current AsyncLocalStorage context into every log entry.
+ */
+export function createCorrelationLogger(component: string) {
+  const child = logger.child({ component })
+  return {
+    trace: (obj: Record<string, unknown>, msg?: string) => child.trace({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+    debug: (obj: Record<string, unknown>, msg?: string) => child.debug({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+    info: (obj: Record<string, unknown>, msg?: string) => child.info({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+    warn: (obj: Record<string, unknown>, msg?: string) => child.warn({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+    error: (obj: Record<string, unknown>, msg?: string) => child.error({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+    fatal: (obj: Record<string, unknown>, msg?: string) => child.fatal({ ...correlationLogBindings(), ...obj }, msg ?? ''),
+  }
+}

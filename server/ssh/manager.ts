@@ -1,8 +1,10 @@
 import { Client, type ConnectConfig } from 'ssh2'
 import { readFileSync } from 'fs'
+import { spawn } from 'child_process'
 import { cli } from '../cli/wrapper.ts'
 import type { SandboxCredentials } from '../cli/types.ts'
 import { createLogger } from '../lib/logger.ts'
+import { mapGetUserFailure } from '../lib/errors.ts'
 
 const log = createLogger('ssh')
 
@@ -31,17 +33,21 @@ function normalizeSandboxCredentials(input: SandboxCredentials | Record<string, 
   const password = (input as any).password ?? (input as any).sshPassword
   let privateKey: string | Buffer | undefined
 
-  const keyPath = (input as any).key_path
-  if (keyPath) {
-    try {
-      privateKey = readFileSync(keyPath)
-    } catch {
-      privateKey = String(keyPath)
-    }
+  // Try inline privateKey first (from CLI response)
+  if ((input as any).privateKey) {
+    privateKey = String((input as any).privateKey)
   }
 
-  if (!privateKey && (input as any).privateKey) {
-    privateKey = (input as any).privateKey as string
+  // Then try reading from key_path
+  if (!privateKey) {
+    const keyPath = (input as any).key_path
+    if (keyPath && typeof keyPath === 'string' && keyPath.trim()) {
+      try {
+        privateKey = readFileSync(keyPath)
+      } catch {
+        log.warn({ keyPath, error: 'key_path file not found, skipping' }, 'SSH key file read failed')
+      }
+    }
   }
 
   if (!host || !Number.isFinite(port) || !username) {
@@ -73,7 +79,9 @@ class SSHManager {
   primeCredentials(projectId: string, rawCredentials: SandboxCredentials | Record<string, unknown>) {
     try {
       this.credentials.set(projectId, normalizeSandboxCredentials(rawCredentials))
-      this.failures.delete(projectId)
+      // Do NOT reset failure state here — only a successful connection clears it.
+      // Previously this.delete(projectId) allowed infinite retry loops
+      // because primeCredentials was called before each connection attempt.
     } catch (err) {
       log.warn({ projectId, error: String(err) }, 'failed to prime SSH credentials')
     }
@@ -147,6 +155,12 @@ class SSHManager {
     try {
       return await run()
     } catch (err) {
+      // Check if we're in a backoff window — don't retry if so
+      const failure = this.failures.get(projectId)
+      if (failure && failure.count >= MAX_CONSECUTIVE_FAILURES && Date.now() - failure.lastAt < BACKOFF_WINDOW_MS) {
+        throw err
+      }
+
       this.clearConnection(projectId)
       return run()
     }
@@ -184,8 +198,17 @@ class SSHManager {
   }
 
   private async connectWithRecovery(projectId: string): Promise<Client> {
+    // Check if we've already exceeded max failures before attempting
+    const existingFailure = this.failures.get(projectId)
+    if (existingFailure && existingFailure.count >= MAX_CONSECUTIVE_FAILURES && Date.now() - existingFailure.lastAt < BACKOFF_WINDOW_MS) {
+      throw new Error('Too many failed SSH attempts. Please wait before retrying.')
+    }
+
     const firstAttempt = await this.connect(projectId, false)
-    if (firstAttempt.ok) return firstAttempt.connection
+    if (firstAttempt.ok) {
+      this.failures.delete(projectId)
+      return firstAttempt.connection
+    }
 
     const firstMessage = firstAttempt.error instanceof Error ? firstAttempt.error.message : String(firstAttempt.error)
     if (!isLikelyAuthError(firstMessage)) {
@@ -196,7 +219,10 @@ class SSHManager {
     this.credentials.delete(projectId)
 
     const secondAttempt = await this.connect(projectId, true)
-    if (secondAttempt.ok) return secondAttempt.connection
+    if (secondAttempt.ok) {
+      this.failures.delete(projectId)
+      return secondAttempt.connection
+    }
     throw secondAttempt.error
   }
 
@@ -222,7 +248,7 @@ class SSHManager {
 
     const result = await cli.acquireSandbox(projectId)
     if (!result.ok) {
-      throw new Error(result.error.message || 'Failed to acquire sandbox credentials')
+      throw mapGetUserFailure(result.error)
     }
 
     const rawCreds = (result.data as any).sandbox ?? result.data

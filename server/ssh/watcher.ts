@@ -32,7 +32,9 @@ function isForbiddenError(message: string) {
     normalized.includes('unauthorized') ||
     normalized.includes('authentication') ||
     normalized.includes('permission denied') ||
-    normalized.includes('acquiring sandbox failed')
+    normalized.includes('acquiring sandbox failed') ||
+    normalized.includes('no ssh auth method') ||
+    normalized.includes('too many failed ssh attempts')
   )
 }
 
@@ -68,15 +70,9 @@ export class FileChangeWatcher {
       context.cooldownTimer = undefined
     }
 
-    if (true) { // enforce fsm
-      context.interval = setInterval(() => {
-        void this.poll(projectId)
-      }, pollMs)
-    } else {
-      context.interval = setInterval(() => {
-        void this.legacyPoll(projectId)
-      }, pollMs)
-    }
+    context.interval = setInterval(() => {
+      void this.poll(projectId)
+    }, pollMs)
 
     this.contexts.set(projectId, context)
     void sshManager.exec(projectId, 'touch /tmp/.vibecode-check').catch(() => {})
@@ -132,45 +128,6 @@ export class FileChangeWatcher {
     }
   }
 
-  private async legacyPoll(projectId: string) {
-    const context = this.contexts.get(projectId)
-    if (!context || context.state !== 'running') return
-
-    try {
-      const output = await sshManager.exec(
-        projectId,
-        `
-          find /home/user/workspace -maxdepth 10 -newer /tmp/.vibecode-check -type f \
-            ! -path '*/node_modules/*' ! -path '*/.git/*' -print 2>/dev/null;
-          touch /tmp/.vibecode-check
-        `,
-      )
-
-      const files = output
-        .split('\n')
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-
-      if (!files.length) return
-
-      const changes: FileChange[] = files.map((filePath) => ({
-        path: normalizeChangedPath(filePath),
-        action: 'modified',
-      }))
-
-      for (const handler of this.handlers) {
-        handler(projectId, changes)
-      }
-
-      scheduleCapture(projectId)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (isForbiddenError(message)) {
-        this.stop(projectId)
-      }
-    }
-  }
-
   private enterBlocked(projectId: string, message: string) {
     const context = this.contexts.get(projectId)
     if (!context) return
@@ -184,7 +141,10 @@ export class FileChangeWatcher {
     context.lastError = message
     context.state = 'blocked_forbidden'
 
-    const cooldownMs = MAX_COOLDOWN_MS; // massive backoff
+    const cooldownMs = Math.min(
+      BASE_COOLDOWN_MS * Math.pow(2, context.forbiddenFailures - 1) + Math.random() * 2000,
+      MAX_COOLDOWN_MS,
+    )
     context.cooldownMs = cooldownMs
 
     this.logCompact(projectId, `blocked:${context.forbiddenFailures}:${message}`, {

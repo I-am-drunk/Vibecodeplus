@@ -3,6 +3,7 @@ import { join } from 'path'
 import { sshManager } from '../ssh/manager.ts'
 import { getDB } from '../state/db.ts'
 import { getDataDir } from '../state/config.ts'
+import { shellEscape } from '../lib/shell.ts'
 
 const IGNORE = new Set(['node_modules', '.git', '.next', 'dist', '__pycache__', '.cache', 'coverage', '.turbo'])
 const WS = '/home/user/workspace'
@@ -45,8 +46,8 @@ async function downloadDir(projectId: string, remote: string, local: string): Pr
   let out = ''
   try {
     out = await sshManager.exec(projectId,
-      `find '${remote}' -maxdepth 1 -mindepth 1 \( -type d -printf 'd %p\n' -o -type f -printf 'f %p\n' \) 2>/dev/null || ` +
-      `{ find '${remote}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's/^/d /'; find '${remote}' -maxdepth 1 -mindepth 1 -type f 2>/dev/null | sed 's/^/f /'; }`
+      `find '${shellEscape(remote)}' -maxdepth 1 -mindepth 1 \( -type d -printf 'd %p\n' -o -type f -printf 'f %p\n' \) 2>/dev/null || ` +
+      `{ find '${shellEscape(remote)}' -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sed 's/^/d /'; find '${shellEscape(remote)}' -maxdepth 1 -mindepth 1 -type f 2>/dev/null | sed 's/^/f /'; }`
     )
   } catch { return 0 }
 
@@ -63,7 +64,7 @@ async function downloadDir(projectId: string, remote: string, local: string): Pr
       count += await downloadDir(projectId, fullPath, join(local, name))
     } else {
       try {
-        const content = await sshManager.exec(projectId, `cat '${fullPath}' 2>/dev/null`)
+        const content = await sshManager.exec(projectId, `cat '${shellEscape(fullPath)}' 2>/dev/null`)
         writeFileSync(join(local, name), content)
         count++
       } catch { /* skip */ }
@@ -81,7 +82,7 @@ export async function pushToProject(sourceId: string, targetId: string): Promise
 
 async function uploadDir(projectId: string, local: string, remote: string): Promise<void> {
   const { readdirSync, statSync, readFileSync } = await import('fs')
-  await sshManager.exec(projectId, `mkdir -p '${remote}'`).catch(() => {})
+  await sshManager.exec(projectId, `mkdir -p '${shellEscape(remote)}'`).catch(() => {})
   for (const name of readdirSync(local)) {
     if (IGNORE.has(name)) continue
     const lp = join(local, name)
@@ -94,7 +95,7 @@ async function uploadDir(projectId: string, local: string, remote: string): Prom
         const content = readFileSync(lp, 'utf-8')
         const esc = content.replace(/\\/g, '\\\\').replace(/'/g, "'\\''")
         const dir2 = rp.split('/').slice(0, -1).join('/')
-        await sshManager.exec(projectId, `mkdir -p '${dir2}' && printf '%s' '${esc}' > '${rp}'`)
+        await sshManager.exec(projectId, `mkdir -p '${shellEscape(dir2)}' && printf '%s' '${esc}' > '${shellEscape(rp)}'`)
       } catch { /* skip binary */ }
     }
   }

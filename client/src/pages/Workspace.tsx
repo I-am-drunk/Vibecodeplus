@@ -115,7 +115,16 @@ export function WorkspacePage() {
   const { reset: resetChat } = useChatStore()
   const { projects, load: loadProjects } = useProjectsStore()
   const { loadSession } = useChat(projectId ?? null)
-  const continuationStore = useContinuationStore()
+  const differentKey = useContinuationStore((s) => s.differentKey)
+  const snapshotAt = useContinuationStore((s) => s.snapshotAt)
+  const migrationStatus = useContinuationStore((s) => s.migrationStatus)
+  const migrationStage = useContinuationStore((s) => s.migrationStage)
+  const showDialog = useContinuationStore((s) => s.showDialog)
+  const continuationSetCheckingStatus = useContinuationStore((s) => s.setCheckingStatus)
+  const continuationSetDifferentKey = useContinuationStore((s) => s.setDifferentKey)
+  const continuationSetMigrationState = useContinuationStore((s) => s.setMigrationState)
+  const continuationSetShowDialog = useContinuationStore((s) => s.setShowDialog)
+  const continuationReset = useContinuationStore((s) => s.reset)
 
   const project = projects.find((entry) => entry.id === projectId)
 
@@ -140,18 +149,19 @@ export function WorkspacePage() {
   const [dragging, setDragging] = useState(false)
 
   const activeWorkspaceIdRef = useRef<string | null>(null)
+  const mountedRef = useRef(true)
 
   useProjectEvents(projectId ?? null)
   useAutoSave(projectId ?? null)
 
   const checkContinuationState = useCallback(
     async (requestedProjectId: string) => {
-      continuationStore.setCheckingStatus(true)
+      continuationSetCheckingStatus(true)
       try {
         const status = await api.continuationStatus(requestedProjectId)
 
-        continuationStore.setDifferentKey(status.needsContinuation, status.snapshotAt)
-        continuationStore.setMigrationState({
+        continuationSetDifferentKey(status.needsContinuation, status.snapshotAt)
+        continuationSetMigrationState({
           migrationId: status.migration?.id ?? null,
           migrationStage: status.migration?.stage ?? null,
           migrationStatus: status.migration?.status ?? null,
@@ -167,10 +177,10 @@ export function WorkspacePage() {
 
         return requestedProjectId
       } finally {
-        continuationStore.setCheckingStatus(false)
+        continuationSetCheckingStatus(false)
       }
     },
-    [continuationStore, navigate],
+    [continuationSetCheckingStatus, continuationSetDifferentKey, continuationSetMigrationState, navigate],
   )
 
   const openWorkspace = useCallback(
@@ -179,12 +189,14 @@ export function WorkspacePage() {
       setConnectError(null)
 
       const resolvedProjectId = await checkContinuationState(requestedProjectId)
-      if (!resolvedProjectId) {
+      if (!resolvedProjectId || !mountedRef.current) {
         setConnecting(false)
         return
       }
 
       const response = await api.openWorkspace(resolvedProjectId)
+      if (!mountedRef.current) return
+
       const canonicalProjectId = response.canonicalProjectId || resolvedProjectId
       activeWorkspaceIdRef.current = canonicalProjectId
 
@@ -193,8 +205,8 @@ export function WorkspacePage() {
       }
 
       if (response.differentKey) {
-        continuationStore.setDifferentKey(true, response.snapshotAt)
-        continuationStore.setShowDialog(true)
+        continuationSetDifferentKey(true, response.snapshotAt)
+        continuationSetShowDialog(true)
         setConnected(false)
         setConnecting(false)
         return
@@ -208,31 +220,37 @@ export function WorkspacePage() {
       if (resumeMode) {
         try {
           const { sessions } = await api.listSessions(canonicalProjectId)
+          if (!mountedRef.current) return
           if (sessions.length > 0) {
             setLastSession(sessions[0])
           } else {
             setResumeBanner(false)
           }
         } catch {
+          if (!mountedRef.current) return
           setResumeBanner(false)
         }
       }
 
       setConnecting(false)
     },
-    [checkContinuationState, continuationStore, navigate, resumeMode, setConnected],
+    [checkContinuationState, continuationSetDifferentKey, continuationSetShowDialog, navigate, resumeMode, setConnected],
   )
 
   useEffect(() => {
     if (!projectId) return
 
-    continuationStore.reset()
+    mountedRef.current = true
+    const abortController = new AbortController()
+    continuationReset()
 
     if (projects.length === 0) {
       void loadProjects().catch(() => {})
     }
 
     void openWorkspace(projectId).catch((error) => {
+      if (abortController.signal.aborted) return
+
       const message = error instanceof Error ? error.message : String(error)
       const lower = message.toLowerCase()
 
@@ -265,6 +283,8 @@ export function WorkspacePage() {
     })
 
     return () => {
+      abortController.abort()
+      mountedRef.current = false
       reset()
       resetChat()
       const activeWorkspaceId = activeWorkspaceIdRef.current
@@ -273,9 +293,9 @@ export function WorkspacePage() {
         void api.closeWorkspace(activeWorkspaceId)
       }
       activeWorkspaceIdRef.current = null
-      continuationStore.reset()
+      continuationReset()
     }
-  }, [continuationStore, loadProjects, openWorkspace, projectId, projects.length, reset, resetChat])
+  }, [continuationReset, loadProjects, openWorkspace, projectId, projects.length, reset, resetChat])
 
   const handleResume = async () => {
     if (!lastSession || !projectId) return
@@ -298,12 +318,11 @@ export function WorkspacePage() {
   }, [openWorkspace, projectId])
 
   const handleContinuationSuccess = (newProjectId: string) => {
-    continuationStore.reset()
+    continuationReset()
     navigate(`/workspace/${newProjectId}`)
   }
 
   const rightVisible = openFiles.length > 0 || showTerminal || showPreview
-  const { differentKey, snapshotAt, migrationStatus, migrationStage } = continuationStore
 
   if (connecting) {
     return (
@@ -450,7 +469,7 @@ export function WorkspacePage() {
             <span className="text-[12px] text-[rgba(235,235,245,0.35)] ml-2">Sending messages is paused.</span>
           </div>
           <button
-            onClick={() => continuationStore.setShowDialog(true)}
+            onClick={() => continuationSetShowDialog(true)}
             className="px-3 h-7 rounded-[8px] border border-[#ff9f0a]/30 text-[12px] text-[#ff9f0a] font-medium hover:bg-[#ff9f0a]/10 transition-colors flex items-center gap-1.5 flex-shrink-0"
           >
             Migrate & Continue
@@ -569,7 +588,7 @@ export function WorkspacePage() {
               This project was created with a different API key. Click below to migrate it to your current key.
             </p>
             <button
-              onClick={() => continuationStore.setShowDialog(true)}
+              onClick={() => continuationSetShowDialog(true)}
               className="px-6 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0a84ff]/90 text-white font-medium transition-colors"
             >
               Migrate Project
@@ -588,12 +607,12 @@ export function WorkspacePage() {
         reason={keyRecoveryReason}
       />
       <ContinuationDialog
-        open={continuationStore.showDialog}
+        open={showDialog}
         projectId={projectId!}
         projectName={project?.name || projectId!}
         snapshotAt={snapshotAt}
         onSuccess={handleContinuationSuccess}
-        onClose={() => continuationStore.setShowDialog(false)}
+        onClose={() => continuationSetShowDialog(false)}
       />
       {showLogs && <LogsDialog onClose={() => setShowLogs(false)} />}
     </div>

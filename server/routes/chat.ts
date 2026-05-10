@@ -6,9 +6,13 @@ import { backupCoordinator } from '../backup/coordinator.ts'
 import { createLogger } from '../lib/logger.ts'
 import { streamRegistry, type StreamTerminalState } from '../state/streams.ts'
 import { parseChatControlRequest, parseChatSendRequest, readBody } from '../contracts/routes.ts'
-import { AppError, badRequest, jsonError, notFound, success } from '../lib/errors.ts'
+import { AppError, badRequest, conflict, jsonError, notFound, success } from '../lib/errors.ts'
 import { resolveCanonicalProjectId } from '../state/migrations.ts'
-import { agentUrls } from '../state/agents.ts'
+import { agentUrls, agentResolver } from '../state/agents.ts'
+import { normalizeAgentUrl } from '../lib/agent-url.ts'
+import { mapGetUserFailure } from '../lib/errors.ts'
+import { getCorrelation, updateCorrelation, correlationLogBindings } from '../lib/correlation.ts'
+import { resolveTerminalState, type StreamFSMContext } from '../services/streamStateMachine.ts'
 
 const log = createLogger('chat')
 
@@ -99,14 +103,16 @@ function saveAssistantMessage(
     inputTokens: number
     outputTokens: number
     toolCalls?: any[]
+    thinkingBlocks?: any[]
+    requestId?: string
   },
 ) {
   const db = getDB()
 
   const result = db.prepare(`
     INSERT OR IGNORE INTO messages
-      (id, session_id, role, content, input_tokens, output_tokens, tool_calls, status, stream_id, created_at)
-    VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, datetime('now'))
+      (id, session_id, role, content, input_tokens, output_tokens, tool_calls, reasoning, status, stream_id, request_id, created_at)
+    VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     crypto.randomUUID(),
     sessionId,
@@ -114,8 +120,10 @@ function saveAssistantMessage(
     opts.inputTokens,
     opts.outputTokens,
     opts.toolCalls?.length ? JSON.stringify(opts.toolCalls) : null,
+    opts.thinkingBlocks?.length ? JSON.stringify(opts.thinkingBlocks) : null,
     opts.status,
     streamId,
+    opts.requestId || null,
   )
 
   if (result.changes === 0) return false
@@ -133,21 +141,6 @@ function saveAssistantMessage(
   return true
 }
 
-function toTerminalStatus(params: {
-  sawDone: boolean
-  sawError: boolean
-  creditsExhausted: boolean
-  aborted: boolean
-  assistantText: string
-}): StreamTerminalState {
-  if (params.aborted) return 'aborted'
-  if (params.sawDone) return 'complete'
-  if (params.sawError) return 'error'
-  if (params.creditsExhausted) return 'cut_off'
-  if (params.assistantText) return 'cut_off'
-  return 'empty'
-}
-
 chatRouter.post('/', async (c) => {
   try {
     const body = await parseChatSendRequest(await readBody(c))
@@ -155,9 +148,35 @@ chatRouter.post('/', async (c) => {
     const resolvedProject = resolveCanonicalProjectId(body.projectId)
     const projectId = resolvedProject.canonicalProjectId
 
-    const resolvedAgentUrl = agentUrls.get(projectId) ?? body.agentUrl
-    if (!resolvedAgentUrl) {
-      throw badRequest('agentUrl not available — open workspace first')
+    // Enrich correlation context with project_id
+    updateCorrelation({ projectId })
+
+    const providedAgentUrl = normalizeAgentUrl(body.agentUrl)
+    const cachedAgentUrl = normalizeAgentUrl(agentUrls.get(projectId))
+
+    const resolvedAgentUrl =
+      cachedAgentUrl ||
+      (providedAgentUrl
+        ? providedAgentUrl
+        : await agentResolver.resolve(projectId, async () => {
+            const acquired = await cli.acquireSandbox(projectId)
+            if (!acquired.ok) {
+              throw mapGetUserFailure(acquired.error)
+            }
+
+            const links = acquired.data.links as any
+            const agentUrl = normalizeAgentUrl(
+              typeof links?.agentUrl === 'string' ? links.agentUrl : (links?.agentUrl?.url as unknown),
+            )
+            if (!agentUrl) {
+              throw badRequest('Sandbox did not return an agentUrl')
+            }
+
+            return agentUrl
+          }))
+
+    if (providedAgentUrl && providedAgentUrl !== cachedAgentUrl) {
+      agentUrls.set(projectId, providedAgentUrl)
     }
 
     const model = body.model?.trim() || 'claude-sonnet-4-6'
@@ -165,14 +184,26 @@ chatRouter.post('/', async (c) => {
 
     saveUserMessage(sessionId, body.prompt)
 
+    // QA-128: Reject concurrent sends to the same session
+    if (streamRegistry.has(sessionId)) {
+      throw conflict('A stream is already active for this session. Please wait for it to complete or abort it first.')
+    }
+
     const abortController = new AbortController()
     const stream = streamRegistry.register(sessionId, projectId, abortController)
+
+    // Enrich correlation context with stream_id
+    updateCorrelation({ streamId: stream.streamId })
+
+    const correlation = getCorrelation()
+    const requestId = correlation.requestId
 
     const startSequence = streamRegistry.nextSequence(sessionId, stream.streamId) ?? 1
     hub.broadcast(`project:${projectId}`, {
       type: 'chat:stream:start',
       sessionId,
       streamId: stream.streamId,
+      requestId,
       sequence: startSequence,
     })
 
@@ -180,13 +211,14 @@ chatRouter.post('/', async (c) => {
       projectId,
       sessionId,
       streamId: stream.streamId,
+      requestId,
       model,
       prompt: body.prompt,
       resolvedAgentUrl,
       abortController,
     })
 
-    return c.json(success({ sessionId, streamId: stream.streamId, canonicalProjectId: projectId }))
+    return c.json(success({ sessionId, streamId: stream.streamId, requestId, canonicalProjectId: projectId }))
   } catch (error) {
     return jsonError(c, error)
   }
@@ -196,20 +228,26 @@ async function runStreamLifecycle(opts: {
   projectId: string
   sessionId: string
   streamId: string
+  requestId: string
   model: string
   prompt: string
   resolvedAgentUrl: string
   abortController: AbortController
 }) {
-  let assistantText = ''
   let inputTokens = 0
   let outputTokens = 0
-  let sawDone = false
-  let sawError = false
-  let creditsExhausted = false
-  let errorMessage: string | null = null
+
+  const fsm: StreamFSMContext = {
+    sawDone: false,
+    sawError: false,
+    creditsExhausted: false,
+    aborted: false,
+    assistantText: '',
+    errorMessage: null,
+  }
 
   const toolCalls: Array<any> = []
+  const thinkingBlocks: Array<{ summary?: string }> = []
 
   try {
     for await (const event of cli.agentSend(opts.resolvedAgentUrl, opts.model, opts.prompt, {
@@ -224,13 +262,14 @@ async function runStreamLifecycle(opts: {
         type: 'chat:event',
         sessionId: opts.sessionId,
         streamId: opts.streamId,
+        requestId: opts.requestId,
         sequence,
         event,
       })
 
       const textChunk = extractTextChunk(event)
       if (textChunk) {
-        assistantText += textChunk
+        fsm.assistantText += textChunk
       }
 
       const toolUse = normalizeToolUse(event)
@@ -247,10 +286,14 @@ async function runStreamLifecycle(opts: {
         }
       }
 
+      if (event.type === 'thinking' && event.thinking) {
+        thinkingBlocks.push({ summary: event.thinking.summary })
+      }
+
       if (event.type === 'done') {
         inputTokens = Number(event.input_tokens || 0)
         outputTokens = Number(event.output_tokens || 0)
-        sawDone = true
+        fsm.sawDone = true
       }
 
       if (event.type === 'credits_low') {
@@ -260,13 +303,14 @@ async function runStreamLifecycle(opts: {
             type: 'credits:low',
             sequence: creditsSequence,
             streamId: opts.streamId,
+            requestId: opts.requestId,
             balance: event.balance,
           })
         }
       }
 
       if (event.type === 'credits_exhausted') {
-        creditsExhausted = true
+        fsm.creditsExhausted = true
         await backupCoordinator.backupNow(opts.projectId, { trigger: 'credits_exhausted', sessionId: opts.sessionId }).catch(() => {})
 
         const exhaustedSequence = streamRegistry.nextSequence(opts.sessionId, opts.streamId)
@@ -275,6 +319,7 @@ async function runStreamLifecycle(opts: {
             type: 'credits:exhausted',
             sequence: exhaustedSequence,
             streamId: opts.streamId,
+            requestId: opts.requestId,
             sessionId: opts.sessionId,
           })
         }
@@ -283,39 +328,35 @@ async function runStreamLifecycle(opts: {
       }
 
       if (event.type === 'error') {
-        sawError = true
-        errorMessage = event.error || 'Unknown stream error'
+        fsm.sawError = true
+        fsm.errorMessage = event.error || 'Unknown stream error'
         break
       }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!opts.abortController.signal.aborted) {
-      sawError = true
-      errorMessage = message
-      log.error({ sessionId: opts.sessionId, projectId: opts.projectId, message }, 'stream failed')
+      log.error({ sessionId: opts.sessionId, projectId: opts.projectId, requestId: opts.requestId, message }, 'stream failed')
+      fsm.sawError = true
+      fsm.errorMessage = message
     }
   }
 
   const stream = streamRegistry.get(opts.sessionId)
-  const aborted = !!(stream && stream.streamId === opts.streamId && stream.abortReason)
+  fsm.aborted = !!(stream && stream.streamId === opts.streamId && stream.abortReason)
 
-  const terminal = toTerminalStatus({
-    sawDone,
-    sawError,
-    creditsExhausted,
-    aborted,
-    assistantText,
-  })
+  const terminal = resolveTerminalState(fsm)
 
   const acceptedTerminal = streamRegistry.markTerminal(opts.sessionId, opts.streamId, terminal)
   if (acceptedTerminal) {
-    if (assistantText || toolCalls.length > 0 || terminal !== 'empty') {
-      saveAssistantMessage(opts.sessionId, opts.streamId, assistantText, {
+    if (fsm.assistantText || toolCalls.length > 0 || thinkingBlocks.length > 0 || terminal !== 'empty') {
+      saveAssistantMessage(opts.sessionId, opts.streamId, fsm.assistantText, {
         status: terminal,
         inputTokens,
         outputTokens,
         toolCalls,
+        thinkingBlocks,
+        requestId: opts.requestId,
       })
     }
 
@@ -325,12 +366,13 @@ async function runStreamLifecycle(opts: {
         type: 'chat:stream:end',
         sessionId: opts.sessionId,
         streamId: opts.streamId,
+        requestId: opts.requestId,
         sequence: finalSequence,
         terminal,
         cutOff: terminal !== 'complete',
-        empty: !assistantText,
-        creditsExhausted,
-        errorMessage,
+        empty: !fsm.assistantText,
+        creditsExhausted: fsm.creditsExhausted,
+        errorMessage: fsm.errorMessage,
       })
     }
   }
@@ -409,9 +451,59 @@ chatRouter.get('/sessions/:id', async (c) => {
           outputTokens: row.output_tokens,
           status: row.status,
           streamId: row.stream_id,
+          toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
+          thinkingBlocks: row.reasoning ? JSON.parse(row.reasoning) : undefined,
         })),
       }),
     )
+  } catch (error) {
+    return jsonError(c, error)
+  }
+})
+
+chatRouter.get('/sessions/:id/stream-status', async (c) => {
+  try {
+    const sessionId = c.req.param('id')
+    if (!sessionId) throw badRequest('session id required')
+
+    // Check if stream is currently active
+    const activeStream = streamRegistry.get(sessionId)
+    if (activeStream) {
+      return c.json(success({
+        active: true,
+        streamId: activeStream.streamId,
+        terminalState: null,
+        canRetry: false,
+        canContinue: false,
+      }))
+    }
+
+    // Check last assistant message for terminal state
+    const db = getDB()
+    const lastAssistant = db.prepare(
+      "SELECT status, stream_id FROM messages WHERE session_id = ? AND role = 'assistant' ORDER BY created_at DESC LIMIT 1"
+    ).get(sessionId) as { status: string; stream_id: string | null } | undefined
+
+    if (!lastAssistant) {
+      return c.json(success({
+        active: false,
+        streamId: null,
+        terminalState: null,
+        canRetry: true,
+        canContinue: false,
+      }))
+    }
+
+    const terminalState = lastAssistant.status as StreamTerminalState
+    const isTerminal = ['complete', 'cut_off', 'empty', 'error', 'aborted'].includes(terminalState)
+
+    return c.json(success({
+      active: false,
+      streamId: lastAssistant.stream_id,
+      terminalState: isTerminal ? terminalState : null,
+      canRetry: isTerminal && terminalState !== 'complete',
+      canContinue: isTerminal && terminalState === 'cut_off',
+    }))
   } catch (error) {
     return jsonError(c, error)
   }
@@ -507,7 +599,7 @@ chatRouter.post('/stop', async (c) => {
 
     streamRegistry.requestAbort(body.sessionId, 'user stopped')
 
-    const agentUrl = agentUrls.get(active.projectId)
+    const agentUrl = normalizeAgentUrl(agentUrls.get(active.projectId))
     if (!agentUrl) {
       return c.json(success({ ok: true, stopped: false, reason: 'no agentUrl' }))
     }

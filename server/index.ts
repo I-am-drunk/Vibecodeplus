@@ -20,7 +20,10 @@ import { terminalRouter } from './routes/terminal.ts'
 import { settingsRouter } from './routes/settings.ts'
 import { continuationRouter } from './routes/continuation.ts'
 import { streamRegistry } from './state/streams.ts'
+import { processRegistry } from './process/registry.ts'
 import { addBrowserLogClient, removeBrowserLogClient } from './lib/logger.ts'
+import { withCorrelation, resolveRequestId, type CorrelationContext } from './lib/correlation.ts'
+import { parseInboundWSMessage, TERMINAL_RESIZE, TERMINAL_INPUT } from './contracts/events.ts'
 
 initDB()
 loadConfig()
@@ -73,12 +76,20 @@ app.use(
   '*',
   bodyLimit({
     maxSize: 50 * 1024 * 1024,
-    onError: (c) => c.json({ code: 'PAYLOAD_TOO_LARGE', message: 'Your prompt exceeds the maximum allowed size.' }, 413 as any),
+    onError: (c) => c.json({ ok: false, error: { code: 'PAYLOAD_TOO_LARGE', message: 'Your prompt exceeds the maximum allowed size.' } }, 413 as any),
   })
 )
 
 app.use('*', cors({ origin: isDev ? 'http://localhost:5173' : '*', credentials: true }))
 if (isDev) app.use('*', logger())
+
+// Correlation ID middleware: establishes request_id context for every request
+app.use('/api/*', async (c, next) => {
+  const requestId = resolveRequestId(c.req.header('X-Request-Id'))
+  const ctx: CorrelationContext = { requestId }
+  c.header('X-Request-Id', requestId)
+  return withCorrelation(ctx, () => next())
+})
 
 app.route('/api/auth', authRouter)
 app.route('/api/projects', projectsRouter)
@@ -90,7 +101,33 @@ app.route('/api/terminal', terminalRouter)
 app.route('/api/settings', settingsRouter)
 app.route('/api/continuation', continuationRouter)
 
-app.get('/api/health', (c) => c.json({ ok: true, version: '0.1.0' }))
+app.get('/api/health', (c) => {
+  // Liveness: server process is running
+  const uptime = process.uptime()
+  const mem = process.memoryUsage()
+
+  return c.json({
+    ok: true,
+    version: '0.1.0',
+    uptime: Math.round(uptime),
+    memory: {
+      rssMB: Math.round(mem.rss / 1024 / 1024),
+      heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
+    },
+    activeStreams: streamRegistry.getActive().length,
+  })
+})
+
+app.get('/api/health/ready', (c) => {
+  // Readiness: server can serve requests (DB is accessible)
+  try {
+    const db = getDB()
+    db.prepare('SELECT 1').get()
+    return c.json({ ok: true, ready: true })
+  } catch {
+    return c.json({ ok: false, ready: false, reason: 'database unavailable' }, 503 as any)
+  }
+})
 
 if (!isDev) {
   const distPath = path.resolve(process.cwd(), 'dist', 'client')
@@ -216,11 +253,15 @@ Bun.serve<{ type: string; projectId?: string }>({
 
         if (typeof data === 'string') {
           try {
-            const message = JSON.parse(data)
-            if (message.type === 'terminal:resize') {
-              stream.setWindow(message.rows, message.cols, 0, 0)
-            } else if (message.type === 'terminal:input') {
-              stream.write(message.data)
+            const parsed = JSON.parse(data)
+            const msg = parseInboundWSMessage(parsed)
+            if (msg && msg.type === TERMINAL_RESIZE) {
+              stream.setWindow(msg.rows, msg.cols, 0, 0)
+            } else if (msg && msg.type === TERMINAL_INPUT) {
+              stream.write(msg.data)
+            } else {
+              // Not a recognized control message — write raw
+              stream.write(data)
             }
           } catch {
             stream.write(data)
@@ -256,9 +297,23 @@ fileWatcher.onChange((projectId, changes) => {
 })
 
 function shutdown(signal: string) {
-  console.log(`[server] ${signal} received — stopping ${streamRegistry.getActive().length} active streams`)
+  console.log(`[server] ${signal} received — draining ${streamRegistry.getActive().length} active streams`)
+
+  // Phase 1: Abort all streams with reason
   streamRegistry.abortAll(`server ${signal}`)
-  process.exit(0)
+
+  // Phase 2: Close SSH connections
+  sshManager.closeAll().catch(() => {})
+
+  // Phase 3: Kill child processes
+  processRegistry.killAll()
+
+  // Phase 4: Allow a brief drain period for in-flight responses
+  const DRAIN_MS = 2000
+  setTimeout(() => {
+    console.log(`[server] drain period complete — exiting`)
+    process.exit(0)
+  }, DRAIN_MS)
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'))

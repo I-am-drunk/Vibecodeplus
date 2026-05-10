@@ -1,19 +1,16 @@
+import { parseInboundWSMessage } from '../contracts/events.ts'
+
 export type WSMessage =
   | { type: 'subscribe'; channels: string[] }
   | { type: 'unsubscribe'; channels: string[] }
   | { type: 'ping' }
 
-function normalizeChannels(value: unknown): string[] {
-  if (!Array.isArray(value)) return []
-  return value
-    .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
-    .filter(Boolean)
-}
-
 class WebSocketHub {
   private clients = new Set<WebSocket>()
   private channelSubscriptions = new Map<string, Set<WebSocket>>()
   private clientSubscriptions = new Map<WebSocket, Set<string>>()
+  private static MAX_CHANNELS_PER_CLIENT = 100
+  private static MAX_CHANNEL_LENGTH = 256
 
   addClient(ws: WebSocket) {
     this.clients.add(ws)
@@ -38,7 +35,11 @@ class WebSocketHub {
     this.addClient(ws)
 
     const ownedChannels = this.clientSubscriptions.get(ws)!
-    for (const channel of channels) {
+    const remaining = WebSocketHub.MAX_CHANNELS_PER_CLIENT - ownedChannels.size
+    const toAdd = channels.slice(0, remaining)
+
+    for (const channel of toAdd) {
+      if (channel.length > WebSocketHub.MAX_CHANNEL_LENGTH) continue
       if (!this.channelSubscriptions.has(channel)) this.channelSubscriptions.set(channel, new Set())
       this.channelSubscriptions.get(channel)!.add(ws)
       ownedChannels.add(channel)
@@ -94,20 +95,21 @@ class WebSocketHub {
 
   handleMessage(ws: WebSocket, raw: string) {
     try {
-      const msg = JSON.parse(raw) as Record<string, unknown>
-      const type = typeof msg.type === 'string' ? msg.type : ''
+      const parsed = JSON.parse(raw)
+      const msg = parseInboundWSMessage(parsed)
+      if (!msg) return
 
-      if (type === 'subscribe') {
-        const channels = normalizeChannels(msg.channels)
+      if (msg.type === 'subscribe') {
+        const channels = msg.channels.map((c) => c.trim()).filter(Boolean)
         if (channels.length > 0) this.subscribe(ws, channels)
       }
 
-      if (type === 'unsubscribe') {
-        const channels = normalizeChannels(msg.channels)
+      if (msg.type === 'unsubscribe') {
+        const channels = msg.channels.map((c) => c.trim()).filter(Boolean)
         if (channels.length > 0) this.unsubscribe(ws, channels)
       }
 
-      if (type === 'ping' && ws.readyState === WebSocket.OPEN) {
+      if (msg.type === 'ping' && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'pong' }))
       }
     } catch {

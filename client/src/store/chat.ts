@@ -1,5 +1,11 @@
 import { create } from 'zustand'
 
+export interface ThinkingBlock {
+  id: string
+  summary?: string
+  messageId?: string
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -47,6 +53,7 @@ interface ChatState {
   creditsExhausted: boolean
   model: string
   toolCalls: ToolCall[]
+  thinkingBlocks: ThinkingBlock[]
   activeStreamId: string | null
   streamingSessionId: string | null
   finalizedStreamIds: Set<string>
@@ -64,6 +71,8 @@ interface ChatState {
   addToolCall: (toolCall: ToolCall) => void
   updateToolCall: (id: string, updates: Partial<ToolCall>) => void
   clearToolCalls: () => void
+  addThinkingBlock: (block: ThinkingBlock) => void
+  clearThinkingBlocks: () => void
   reset: () => void
 }
 
@@ -76,6 +85,7 @@ export const useChatStore = create<ChatState>((set) => ({
   creditsExhausted: false,
   model: 'claude-sonnet-4-6',
   toolCalls: [],
+  thinkingBlocks: [],
   activeStreamId: null,
   streamingSessionId: null,
   finalizedStreamIds: new Set(),
@@ -102,6 +112,7 @@ export const useChatStore = create<ChatState>((set) => ({
       isStreaming: true,
       streamingText: '',
       toolCalls: [],
+      thinkingBlocks: [],
     })),
 
   appendStreamText: (text) => set((state) => ({ streamingText: state.streamingText + text })),
@@ -156,6 +167,9 @@ export const useChatStore = create<ChatState>((set) => ({
         toolCalls: state.toolCalls.map((toolCall) =>
           toolCall.messageId ? toolCall : { ...toolCall, messageId },
         ),
+        thinkingBlocks: state.thinkingBlocks.map((block) =>
+          block.messageId ? block : { ...block, messageId },
+        ),
       }
     }),
 
@@ -189,6 +203,11 @@ export const useChatStore = create<ChatState>((set) => ({
 
   clearToolCalls: () => set({ toolCalls: [] }),
 
+  addThinkingBlock: (block) =>
+    set((state) => ({ thinkingBlocks: [...state.thinkingBlocks, block] })),
+
+  clearThinkingBlocks: () => set({ thinkingBlocks: [] }),
+
   reset: () =>
     set({
       sessions: [],
@@ -197,6 +216,7 @@ export const useChatStore = create<ChatState>((set) => ({
       streamingText: '',
       isStreaming: false,
       toolCalls: [],
+      thinkingBlocks: [],
       creditsExhausted: false,
       activeStreamId: null,
       streamingSessionId: null,

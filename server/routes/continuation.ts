@@ -11,12 +11,17 @@ import {
   getLatestMigrationForSource,
   getProjectMigration,
   resolveCanonicalProjectId,
+  cancelMigration,
 } from '../state/migrations.ts'
 import { continuationOrchestrator } from '../continuation/orchestrator.ts'
 import { parseContinuationEnactRequest, readBody } from '../contracts/routes.ts'
 import { AppError, badRequest, jsonError, notFound, success, unauthorized } from '../lib/errors.ts'
 import { agentUrls } from '../state/agents.ts'
+import { normalizeAgentUrl } from '../lib/agent-url.ts'
+import { mapGetUserFailure } from '../lib/errors.ts'
 import { featureFlags } from '../lib/flags.ts'
+import { getCorrelation, updateCorrelation } from '../lib/correlation.ts'
+import { isMigrationTerminal } from '../services/migrationService.ts'
 
 const log = createLogger('continuation')
 
@@ -54,6 +59,7 @@ function serializeMigration(migration: ReturnType<typeof getProjectMigration>) {
     updatedAt: migration.updatedAt,
     completedAt: migration.completedAt,
     failedAt: migration.failedAt,
+    isTerminal: isMigrationTerminal(migration.status),
   }
 }
 
@@ -146,11 +152,17 @@ continuationRouter.post('/enact', async (c) => {
     }
 
     const migration = continuationOrchestrator.start(body.sourceProjectId)
+
+    // Enrich correlation context with migration_id and project_id
+    updateCorrelation({ projectId: body.sourceProjectId, migrationId: migration.id })
+    const correlation = getCorrelation()
+
     const statusCode = migration.status === 'completed' ? 200 : 202
 
     return c.json(
       success({
         ok: true,
+        requestId: correlation.requestId,
         migration: serializeMigration(migration),
       }),
       statusCode,
@@ -199,27 +211,31 @@ async function runLegacyEnact(sourceProjectId: string, source: ProjectRow, authK
   let sourcePreserved = true
 
   const sandboxResult = await cli.acquireSandbox(newProjectId)
-  if (sandboxResult.ok) {
-    const sandbox = sandboxResult.data.sandbox
-    const links = sandboxResult.data.links as any
+  if (!sandboxResult.ok) {
+    throw mapGetUserFailure(sandboxResult.error)
+  }
 
-    sshManager.primeCredentials(newProjectId, sandbox)
-    await sshManager.getConnection(newProjectId)
+  const sandbox = sandboxResult.data.sandbox
+  const links = sandboxResult.data.links as any
 
-    if (links?.agentUrl?.url) {
-      agentUrls.set(newProjectId, String(links.agentUrl.url))
+  const acquiredAgentUrl = normalizeAgentUrl(
+    typeof links?.agentUrl === 'string' ? links.agentUrl : (links?.agentUrl?.url as unknown),
+  )
+
+  sshManager.primeCredentials(newProjectId, sandbox)
+  await sshManager.getConnection(newProjectId)
+
+  if (acquiredAgentUrl) {
+    agentUrls.set(newProjectId, acquiredAgentUrl)
+  }
+
+  if (source.snapshot_dir) {
+    try {
+      await pushToProject(sourceProjectId, newProjectId)
+    } catch (error) {
+      fileTransferWarning = error instanceof Error ? error.message : String(error)
+      log.warn({ sourceProjectId, newProjectId, warning: fileTransferWarning }, 'snapshot push failed in legacy mode')
     }
-
-    if (source.snapshot_dir) {
-      try {
-        await pushToProject(sourceProjectId, newProjectId)
-      } catch (error) {
-        fileTransferWarning = error instanceof Error ? error.message : String(error)
-        log.warn({ sourceProjectId, newProjectId, warning: fileTransferWarning }, 'snapshot push failed in legacy mode')
-      }
-    }
-  } else {
-    fileTransferWarning = sandboxResult.error.message || 'Could not acquire sandbox for the new project'
   }
 
   fileWatcher.stop(sourceProjectId)
@@ -233,3 +249,30 @@ async function runLegacyEnact(sourceProjectId: string, source: ProjectRow, authK
     sourcePreserved,
   }
 }
+
+// QA-064: Cancel a running migration
+continuationRouter.post('/cancel', async (c) => {
+  try {
+    const body = await readBody(c) as Record<string, unknown>
+    const migrationId = typeof body?.migrationId === 'string' ? body.migrationId.trim() : ''
+    if (!migrationId) throw badRequest('migrationId is required')
+
+    const result = cancelMigration(migrationId)
+    if (!result) {
+      throw badRequest('Migration not found or not in a cancellable state')
+    }
+
+    return c.json(success({
+      migration: {
+        id: result.id,
+        status: result.status,
+        stage: result.stage,
+        errorCode: result.errorCode,
+        errorMessage: result.errorMessage,
+        sourcePreserved: result.sourcePreserved,
+      },
+    }))
+  } catch (error) {
+    return jsonError(c, error)
+  }
+})

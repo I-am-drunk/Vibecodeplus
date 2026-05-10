@@ -5,8 +5,11 @@ import { sshManager } from '../ssh/manager.ts'
 import { processRegistry } from '../process/registry.ts'
 import { streamRegistry } from '../state/streams.ts'
 import { createLogger } from '../lib/logger.ts'
-import { jsonError, success, AppError, unauthorized, badRequest } from '../lib/errors.ts'
+import { jsonError, success, AppError, unauthorized, badRequest, forbidden } from '../lib/errors.ts'
 import { parseLoginRequest, readBody } from '../contracts/routes.ts'
+import { agentUrls } from '../state/agents.ts'
+import { fileWatcher } from '../ssh/watcher.ts'
+import { mapGetUserFailure } from '../lib/errors.ts'
 
 const log = createLogger('auth')
 
@@ -30,7 +33,7 @@ async function validateApiKey(apiKey: string) {
   const result = await cli.getUser()
   if (!result.ok) {
     cli.setApiKey('')
-    throw unauthorized(result.error.message || 'Authentication failed', { dependencyCode: result.error.code })
+    throw mapGetUserFailure(result.error)
   }
 
   const response = formatAuthResponse(result.data)
@@ -72,7 +75,9 @@ authRouter.post('/logout', async (c) => {
     cli.setApiKey('')
     processRegistry.killAll()
     streamRegistry.abortAll('logout')
+    fileWatcher.stop()
     await sshManager.closeAll()
+    agentUrls.clear()
     return c.json(success({ ok: true }))
   } catch (error) {
     return jsonError(c, error)
@@ -134,6 +139,7 @@ authRouter.post('/rotate', async (c) => {
 
     streamRegistry.abortAll('api key rotated')
     await sshManager.closeAll()
+    agentUrls.clear()
 
     return c.json(success(response))
   } catch (error) {
@@ -153,6 +159,14 @@ authRouter.get('/credits', async (c) => {
     cli.setApiKey(stored.key)
     const result = await cli.getUser()
     if (!result.ok) {
+      if (result.error.code === 'AUTH_FAILED') {
+        clearAuth()
+        cli.setApiKey('')
+        throw unauthorized('Not authenticated')
+      }
+      if (result.error.code === 'CREDITS_EXHAUSTED') {
+        return c.json(success({ credits: { balance: 0, used: 0, limit: null } }))
+      }
       throw new AppError('DEPENDENCY_ERROR', result.error.message || 'Failed to fetch credits', 502)
     }
 
