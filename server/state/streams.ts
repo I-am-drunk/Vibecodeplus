@@ -13,6 +13,9 @@ export interface ActiveStream {
   sequence: number
   terminalState: StreamTerminalState | null
   abortReason: string | null
+  buffer: string
+  toolCalls: any[]
+  lastActivityAt: number
 }
 
 export class StreamRegistry {
@@ -40,6 +43,9 @@ export class StreamRegistry {
       sequence: 0,
       terminalState: null,
       abortReason: null,
+      buffer: '',
+      toolCalls: [],
+      lastActivityAt: Date.now(),
     }
 
     this.bySession.set(sessionId, stream)

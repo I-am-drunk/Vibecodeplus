@@ -50,12 +50,13 @@ interface ChatState {
   activeStreamId: string | null
   streamingSessionId: string | null
   finalizedStreamIds: Set<string>
+  appendingToId: string | null
 
   setSessions: (sessions: ChatSession[]) => void
   setActiveSession: (id: string | null) => void
   setMessages: (messages: Message[]) => void
   addMessage: (msg: Message) => void
-  beginStream: (params: { sessionId: string; streamId: string }) => void
+  beginStream: (params: { sessionId: string; streamId: string; appendMessageId?: string }) => void
   appendStreamText: (text: string) => void
   finalizeStream: (params: StreamFinalizeParams) => void
   setStreaming: (value: boolean) => void
@@ -79,29 +80,29 @@ export const useChatStore = create<ChatState>((set) => ({
   activeStreamId: null,
   streamingSessionId: null,
   finalizedStreamIds: new Set(),
+  appendingToId: null,
 
   setSessions: (sessions) => set({ sessions }),
 
   setActiveSession: (id) => {
     set({ activeSessionId: id })
-    if (id) {
-      localStorage.setItem('activeSessionId', id)
-    } else {
-      localStorage.removeItem('activeSessionId')
-    }
   },
 
   setMessages: (messages) => set({ messages }),
 
-  addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
+  addMessage: (msg) => set((state) => {
+    if (state.messages.some(m => m.id === msg.id)) return state
+    return { messages: [...state.messages, msg] }
+  }),
 
-  beginStream: ({ sessionId, streamId }) =>
+  beginStream: ({ sessionId, streamId, appendMessageId }) =>
     set(() => ({
       streamingSessionId: sessionId,
       activeStreamId: streamId,
       isStreaming: true,
       streamingText: '',
       toolCalls: [],
+      appendingToId: appendMessageId || null,
     })),
 
   appendStreamText: (text) => set((state) => ({ streamingText: state.streamingText + text })),
@@ -114,7 +115,7 @@ export const useChatStore = create<ChatState>((set) => ({
 
       const hasContent = Boolean(content)
       const hasUnassignedToolCalls = state.toolCalls.some((toolCall) => !toolCall.messageId)
-      const shouldPersistMessage = hasContent || hasUnassignedToolCalls || terminal !== 'empty'
+      const shouldPersistMessage = hasContent || hasUnassignedToolCalls || terminal !== 'empty' || state.appendingToId
 
       const nextFinalized = new Set(state.finalizedStreamIds)
       if (streamId) {
@@ -131,7 +132,34 @@ export const useChatStore = create<ChatState>((set) => ({
           streamingText: '',
           activeStreamId: null,
           streamingSessionId: null,
+          appendingToId: null,
           finalizedStreamIds: nextFinalized,
+        }
+      }
+
+      if (state.appendingToId) {
+        return {
+          streamingText: '',
+          isStreaming: false,
+          activeStreamId: null,
+          streamingSessionId: null,
+          appendingToId: null,
+          finalizedStreamIds: nextFinalized,
+          messages: state.messages.map(m => {
+            if (m.id === state.appendingToId) {
+              return {
+                ...m,
+                content: m.content + content,
+                cutOff: terminal !== 'complete',
+                terminalStatus: terminal,
+              }
+            }
+            return m
+          }),
+          activeSessionId: sessionId ?? state.activeSessionId,
+          toolCalls: state.toolCalls.map((toolCall) =>
+            toolCall.messageId ? toolCall : { ...toolCall, messageId: state.appendingToId ?? undefined },
+          ),
         }
       }
 
@@ -201,5 +229,6 @@ export const useChatStore = create<ChatState>((set) => ({
       activeStreamId: null,
       streamingSessionId: null,
       finalizedStreamIds: new Set(),
+      appendingToId: null,
     }),
 }))

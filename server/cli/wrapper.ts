@@ -174,67 +174,82 @@ export class VibecodeCliWrapper {
   async *runStream(args: string[], opts?: { signal?: AbortSignal }): AsyncGenerator<AgentStreamEvent> {
     if (!this.binaryPath) throw new Error('vibecode-cli not found')
 
+    let lastActivity = Date.now()
+
     const proc = spawn(this.binaryPath, args, {
       env: this.getEnv(),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    let stderrBuffer = ''
-    let stdoutBuffer = ''
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity > 60000) {
+        log.error('CLI stream hung for 60s with 0 bytes of output. Executing SIGTERM.')
+        proc.kill('SIGTERM')
+      }
+    }, 5000)
 
-    const onAbort = () => proc.kill('SIGTERM')
-    opts?.signal?.addEventListener('abort', onAbort)
+    try {
+      let stderrBuffer = ''
+      let stdoutBuffer = ''
 
-    proc.stderr.on('data', (chunk: Buffer) => {
-      stderrBuffer += chunk.toString()
-    })
+      const onAbort = () => proc.kill('SIGTERM')
+      opts?.signal?.addEventListener('abort', onAbort)
 
-    for await (const chunk of proc.stdout) {
-      stdoutBuffer += chunk.toString()
-      const lines = stdoutBuffer.split('\n')
-      stdoutBuffer = lines.pop() ?? ''
+      proc.stderr.on('data', (chunk: Buffer) => {
+        lastActivity = Date.now()
+        stderrBuffer += chunk.toString()
+      })
 
-      for (const raw of lines) {
-        const line = raw.trim()
-        if (!line) continue
+      for await (const chunk of proc.stdout) {
+        lastActivity = Date.now()
+        stdoutBuffer += chunk.toString()
+        const lines = stdoutBuffer.split('\n')
+        stdoutBuffer = lines.pop() ?? ''
 
-        const payload = line.startsWith('data:') ? line.slice(5).trim() : line
-        if (!payload || payload === '[DONE]') continue
+        for (const raw of lines) {
+          const line = raw.trim()
+          if (!line) continue
 
-        try {
-          const parsed = JSON.parse(payload)
-          const event = parseAgentStreamEvent(parsed.message ?? parsed)
-          if (event) {
-            yield event
+          const payload = line.startsWith('data:') ? line.slice(5).trim() : line
+          if (!payload || payload === '[DONE]') continue
+
+          try {
+            const parsed = JSON.parse(payload)
+            const event = parseAgentStreamEvent(parsed.message ?? parsed)
+            if (event) {
+              yield event
+            }
+          } catch {
+            // ignore non-json line
           }
-        } catch {
-          // ignore non-json line
         }
       }
-    }
 
-    if (stdoutBuffer.trim()) {
-      try {
-        const parsed = JSON.parse(stdoutBuffer.trim())
-        const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
-        if (event) yield event
-      } catch {
-        // ignore trailing non-json
+      if (stdoutBuffer.trim()) {
+        try {
+          const parsed = JSON.parse(stdoutBuffer.trim())
+          const event = parseAgentStreamEvent((parsed as any).message ?? parsed)
+          if (event) yield event
+        } catch {
+          // ignore trailing non-json
+        }
       }
-    }
 
-    const exitCode = await new Promise<number>((resolve) => {
-      proc.on('exit', (code) => resolve(code ?? 0))
-    })
+      const exitCode = await new Promise<number>((resolve) => {
+        proc.on('exit', (code) => resolve(code ?? 0))
+      })
 
-    opts?.signal?.removeEventListener('abort', onAbort)
+      opts?.signal?.removeEventListener('abort', onAbort)
 
-    if (exitCode !== 0) {
-      throw new Error(stderrBuffer.trim() || `CLI exited with code ${exitCode}`)
-    }
+      if (exitCode !== 0) {
+        throw new Error(stderrBuffer.trim() || `CLI exited with code ${exitCode}`)
+      }
 
-    if (stderrBuffer.trim()) {
-      log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
+      if (stderrBuffer.trim()) {
+        log.debug({ stderr: stderrBuffer.trim() }, 'cli stream stderr')
+      }
+    } finally {
+      clearInterval(watchdog)
     }
   }
 

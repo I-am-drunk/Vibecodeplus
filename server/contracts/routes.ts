@@ -15,6 +15,9 @@ export type ChatSendRequest = {
   prompt: string
   sessionId?: string
   agentUrl?: string
+  messageId?: string
+  isContinuation?: boolean
+  appendMessageId?: string
 }
 
 export type ChatControlRequest = {
@@ -79,6 +82,9 @@ export async function parseChatSendRequest(raw: unknown): Promise<ChatSendReques
   const model = readString(body, 'model')
   const sessionId = readString(body, 'sessionId')
   const agentUrl = readString(body, 'agentUrl')
+  const messageId = readString(body, 'messageId')
+  const isContinuation = typeof body.isContinuation === 'boolean' ? body.isContinuation : undefined
+  const appendMessageId = readString(body, 'appendMessageId')
 
   return {
     projectId: projectId!,
@@ -86,6 +92,9 @@ export async function parseChatSendRequest(raw: unknown): Promise<ChatSendReques
     model,
     sessionId,
     agentUrl,
+    messageId,
+    isContinuation,
+    appendMessageId,
   }
 }
 

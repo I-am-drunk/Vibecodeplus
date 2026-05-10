@@ -151,7 +151,7 @@ export const api = {
     }>('POST', `/api/projects/${id}/workspace`),
   closeWorkspace: (id: string) => request<{ ok: boolean }>('DELETE', `/api/projects/${id}/workspace`).catch(() => ({ ok: true })),
 
-  sendMessage: (body: { projectId: string; model: string; prompt: string; sessionId?: string; agentUrl?: string }) =>
+  sendMessage: (body: { projectId: string; model: string; prompt: string; sessionId?: string; agentUrl?: string; messageId?: string; isContinuation?: boolean; appendMessageId?: string }) =>
     request<{ sessionId: string; streamId: string; canonicalProjectId?: string }>('POST', '/api/chat', body),
   abortChat: (projectId: string, sessionId: string) =>
     request<{ ok: boolean; aborted: boolean }>('POST', '/api/chat/abort', { projectId, sessionId }),
